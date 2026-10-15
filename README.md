@@ -3,6 +3,7 @@
 A small web app for the support team to audit Apna Expert (support bot) chats from a MongoDB export of the `supportPostChat` collection, until the analytics tables are ready.
 
 - Drop a MongoDB export (JSON/NDJSON) or a transcripts CSV downloaded from BlueMachines and it shows the 8 audit queues from the *AI Chatbot Audit & Quality Assurance* proposal, the headline numbers, and every chat with its transcript and the evaluator's turn-by-turn notes.
+- The **Transcript generator** tab lists every loaded chat with user/conversation filters, handoff and CSAT filters, sorting, a formatted transcript view, and individual or bulk plain-text downloads.
 - **Data never leaves the browser.** Files are read locally. Nothing is uploaded or stored on a server, so the Vercel deployment holds no chat data. Refreshing the tab clears the loaded chats.
 - No build step, no dependencies: plain HTML, CSS and JavaScript modules.
 
@@ -92,7 +93,7 @@ All thresholds, keyword lists and fixed bot lines are in **`js/config.js`**.
 | `js/data.js` | Reads exports and turns both record shapes into one conversation object |
 | `js/audit.js` | The 8 queue rules and the reasons shown for each chat |
 | `js/metrics.js` | Headline numbers, daily volume, top intents and failure tags |
-| `js/main.js` | Screens (upload, overview, conversations, chat detail, how it works), routing, CSV export, escalations |
+| `js/main.js` | Screens (upload, overview, conversations, transcript generator, chat detail, how it works), routing, exports, escalations |
 | `js/chart.js` | Daily stacked bar chart (SVG) |
 | `js/ui.js` | HTML escaping, CSV helpers, download, toast |
 | `test/check.mjs` | Command-line check of the rules against an export |

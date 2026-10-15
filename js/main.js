@@ -30,7 +30,9 @@ const state = {
   files: [],
   escalations: loadEscalations(),
   filters: { from: '', to: '', q: '', cat: '', handoff: '', hideTests: true, engagedOnly: true },
+  transcriptFilters: { userId: '', conversationId: '', handoff: '', csat: '', sort: 'newest' },
   page: 1,
+  transcriptPage: 1,
 };
 
 const app = document.getElementById('app');
@@ -160,6 +162,43 @@ function listFiltered() {
     if (q && !c.searchText.includes(q)) return false;
     return true;
   });
+}
+
+function transcriptUserId(c) {
+  return c.apnaEmployerId || c.employerId || '';
+}
+
+function transcriptFiltered() {
+  const f = state.transcriptFilters;
+  const userId = f.userId.trim().toLowerCase();
+  const conversationId = f.conversationId.trim().toLowerCase();
+  const rows = state.convs.filter((c) => {
+    if (userId && !String(transcriptUserId(c)).toLowerCase().includes(userId)) return false;
+    if (conversationId && !String(c.id || '').toLowerCase().includes(conversationId)) return false;
+    if (f.handoff === 'yes' && !c.handoff) return false;
+    if (f.handoff === 'no' && c.handoff) return false;
+    if (f.csat === 'none' && c.csat !== null) return false;
+    if (f.csat && f.csat !== 'none' && c.csat !== f.csat) return false;
+    return true;
+  });
+
+  const text = (v) => String(v || '').toLowerCase();
+  const score = (c) => c.botScorePct === null ? null : c.botScorePct;
+  rows.sort((a, b) => {
+    if (f.sort === 'oldest') return (a.createdAt?.getTime() || 0) - (b.createdAt?.getTime() || 0);
+    if (f.sort === 'user_asc') return text(transcriptUserId(a)).localeCompare(text(transcriptUserId(b))) || text(a.id).localeCompare(text(b.id));
+    if (f.sort === 'conversation_asc') return text(a.id).localeCompare(text(b.id));
+    if (f.sort === 'score_desc' || f.sort === 'score_asc') {
+      const as = score(a);
+      const bs = score(b);
+      if (as === null && bs === null) return 0;
+      if (as === null) return 1;
+      if (bs === null) return -1;
+      return f.sort === 'score_desc' ? bs - as : as - bs;
+    }
+    return (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0);
+  });
+  return rows;
 }
 
 function istToday() {
@@ -381,6 +420,159 @@ function renderListBody() {
   body.querySelector('#next')?.addEventListener('click', () => { state.page++; renderListBody(); window.scrollTo(0, 0); });
 }
 
+function transcriptText(c) {
+  const speaker = { Bot: 'Apna Expert', User: 'Employer', Agent: 'Support agent' };
+  const handoff = c.handoff ? label(c.handoffStatus) : c.handoffStatus === 'said_only' ? 'said only (no handoff)' : 'no';
+  const header = [
+    'APNA EXPERT TRANSCRIPT',
+    `Conversation ID: ${c.id || '–'}`,
+    `User ID: ${transcriptUserId(c) || '–'}`,
+    `Time (IST): ${c.dateIST || '–'} ${c.timeIST || ''}`.trim(),
+    `Bot score: ${c.botScorePct === null ? '–' : `${Math.round(c.botScorePct)}%`}`,
+    `CSAT: ${c.csat || 'not given'}`,
+    `Human handoff: ${handoff}`,
+  ];
+  const messages = c.messages.length
+    ? c.messages.map((m) => `${speaker[m.speaker] || m.speaker}: ${m.text}`)
+    : ['(No spoken transcript available.)'];
+  return [...header, '', ...messages].join('\n');
+}
+
+function transcriptFilename(c) {
+  const id = String(c.id || 'conversation').replace(/[^a-z0-9._-]+/gi, '-');
+  return `apna-expert-transcript-${id}.txt`;
+}
+
+function downloadTranscripts(rows) {
+  const separator = `\n\n${'='.repeat(80)}\n\n`;
+  download(`apna-expert-transcripts-${istToday()}.txt`, rows.map(transcriptText).join(separator), 'text/plain');
+}
+
+function renderTranscriptList() {
+  const f = state.transcriptFilters;
+  app.innerHTML = `
+    <div class="section-head">
+      <div><h2>Transcript generator</h2><span class="muted small">Browse and download clean, formatted chat transcripts.</span></div>
+      <button class="btn primary" id="download-all-transcripts">Download all transcripts (.txt)</button>
+    </div>
+    <div class="filters card pad" id="transcript-filters">
+      <div class="field"><label for="tf-user">User ID</label><input type="search" id="tf-user" placeholder="Search user ID" value="${esc(f.userId)}"></div>
+      <div class="field"><label for="tf-conversation">Conversation ID</label><input type="search" id="tf-conversation" placeholder="Search conversation ID" value="${esc(f.conversationId)}"></div>
+      <div class="field"><label for="tf-handoff">Human handoff</label>
+        <select id="tf-handoff">
+          <option value="">Any</option>
+          <option value="yes" ${f.handoff === 'yes' ? 'selected' : ''}>Yes</option>
+          <option value="no" ${f.handoff === 'no' ? 'selected' : ''}>No</option>
+        </select></div>
+      <div class="field"><label for="tf-csat">CSAT</label>
+        <select id="tf-csat">
+          <option value="">Any</option>
+          <option value="yes" ${f.csat === 'yes' ? 'selected' : ''}>Yes</option>
+          <option value="no" ${f.csat === 'no' ? 'selected' : ''}>No</option>
+          <option value="none" ${f.csat === 'none' ? 'selected' : ''}>Not given</option>
+        </select></div>
+      <div class="field"><label for="tf-sort">Sort</label>
+        <select id="tf-sort">
+          <option value="newest" ${f.sort === 'newest' ? 'selected' : ''}>Newest first</option>
+          <option value="oldest" ${f.sort === 'oldest' ? 'selected' : ''}>Oldest first</option>
+          <option value="user_asc" ${f.sort === 'user_asc' ? 'selected' : ''}>User ID A–Z</option>
+          <option value="conversation_asc" ${f.sort === 'conversation_asc' ? 'selected' : ''}>Conversation ID A–Z</option>
+          <option value="score_desc" ${f.sort === 'score_desc' ? 'selected' : ''}>Bot score high–low</option>
+          <option value="score_asc" ${f.sort === 'score_asc' ? 'selected' : ''}>Bot score low–high</option>
+        </select></div>
+    </div>
+    <div class="section card" id="transcript-list-body"></div>`;
+
+  const filters = app.querySelector('#transcript-filters');
+  const update = (key, value) => {
+    f[key] = value;
+    state.transcriptPage = 1;
+    renderTranscriptListBody();
+  };
+  filters.querySelector('#tf-user').addEventListener('input', (e) => update('userId', e.target.value));
+  filters.querySelector('#tf-conversation').addEventListener('input', (e) => update('conversationId', e.target.value));
+  filters.querySelector('#tf-handoff').addEventListener('change', (e) => update('handoff', e.target.value));
+  filters.querySelector('#tf-csat').addEventListener('change', (e) => update('csat', e.target.value));
+  filters.querySelector('#tf-sort').addEventListener('change', (e) => update('sort', e.target.value));
+  app.querySelector('#download-all-transcripts').addEventListener('click', () => downloadTranscripts(state.convs));
+  renderTranscriptListBody();
+}
+
+function renderTranscriptListBody() {
+  const rows = transcriptFiltered();
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  state.transcriptPage = Math.min(state.transcriptPage, pages);
+  const start = (state.transcriptPage - 1) * PAGE_SIZE;
+  const slice = rows.slice(start, start + PAGE_SIZE);
+  const body = app.querySelector('#transcript-list-body');
+  body.innerHTML = `
+    <div class="pager" style="justify-content:space-between">
+      <span class="muted">${rows.length} of ${state.convs.length} transcripts</span>
+      <button class="btn" id="download-filtered-transcripts" ${rows.length ? '' : 'disabled'}>Download filtered transcripts</button>
+    </div>
+    <div class="table-wrap"><table class="list">
+      <thead><tr><th>User ID</th><th>Conversation ID</th><th>Time (IST)</th><th class="num">Bot score</th><th>CSAT</th><th>Human handoff</th></tr></thead>
+      <tbody>${slice.map((c) => `<tr class="row" data-id="${esc(c.id)}">
+        <td class="num">${esc(transcriptUserId(c) || '–')}</td>
+        <td class="num">${esc(c.id)}</td>
+        <td class="when num">${esc(fmtDate(c.dateIST))}${c.dateIST ? ` ${esc(c.dateIST.slice(0, 4))}` : ''}<br><span class="muted">${esc(c.timeIST)}</span></td>
+        <td class="num">${c.botScorePct === null ? '<span class="muted">–</span>' : `${Math.round(c.botScorePct)}%`}</td>
+        <td>${c.csat ? `<span class="chip ${c.csat === 'yes' ? 'good' : 'alert'}">${esc(label(c.csat))}</span>` : '<span class="muted">Not given</span>'}</td>
+        <td>${handoffChip(c)}</td>
+      </tr>`).join('') || '<tr><td colspan="6" class="muted" style="padding:24px">No transcripts match these filters.</td></tr>'}</tbody>
+    </table></div>
+    ${pages > 1 ? `<div class="pager"><button class="btn" id="transcript-prev" ${state.transcriptPage === 1 ? 'disabled' : ''}>Previous</button><span class="muted">Page ${state.transcriptPage} of ${pages}</span><button class="btn" id="transcript-next" ${state.transcriptPage === pages ? 'disabled' : ''}>Next</button></div>` : ''}`;
+  body.querySelectorAll('tr.row').forEach((tr) => tr.addEventListener('click', () => {
+    location.hash = `#/transcripts/c/${encodeURIComponent(tr.dataset.id)}`;
+  }));
+  body.querySelector('#download-filtered-transcripts')?.addEventListener('click', () => downloadTranscripts(rows));
+  body.querySelector('#transcript-prev')?.addEventListener('click', () => {
+    state.transcriptPage--;
+    renderTranscriptListBody();
+    window.scrollTo(0, 0);
+  });
+  body.querySelector('#transcript-next')?.addEventListener('click', () => {
+    state.transcriptPage++;
+    renderTranscriptListBody();
+    window.scrollTo(0, 0);
+  });
+}
+
+function renderTranscriptDetail(id) {
+  const c = state.convs.find((conversation) => conversation.id === id);
+  if (!c) {
+    app.innerHTML = `<div class="card pad">This transcript is not in the loaded data. <a href="#/transcripts">Back to transcripts</a></div>`;
+    return;
+  }
+  app.innerHTML = `
+    <div class="section-head">
+      <p><a href="#/transcripts">← Back to transcript generator</a></p>
+      <button class="btn primary" id="download-transcript">Download transcript (.txt)</button>
+    </div>
+    <div class="card pad">
+      <div class="detail-head">
+        <div>
+          <h1>Transcript · ${esc(c.id)}</h1>
+          <div class="meta">
+            <span>User ID <b class="num">${esc(transcriptUserId(c) || '–')}</b></span>
+            <span>Time <b>${esc(fmtDate(c.dateIST))} ${c.dateIST ? esc(c.dateIST.slice(0, 4)) : ''}, ${esc(c.timeIST)} IST</b></span>
+            <span>Bot score <b>${c.botScorePct === null ? '–' : `${Math.round(c.botScorePct)}%`}</b></span>
+            <span>CSAT <b>${esc(c.csat || 'Not given')}</b></span>
+            <span>Human handoff ${handoffChip(c)}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card section">
+      <div class="pad" style="padding-bottom:0"><h2>Full transcript</h2></div>
+      <div class="transcript">${transcriptHTML(c)}</div>
+    </div>`;
+  app.querySelector('#download-transcript').addEventListener('click', () => {
+    download(transcriptFilename(c), transcriptText(c), 'text/plain');
+  });
+  window.scrollTo(0, 0);
+}
+
 const truncate = (t, n) => { const s = String(t || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 
 function exportCSV(rows) {
@@ -566,6 +758,8 @@ function route() {
   });
   if (path.startsWith('/rules')) return renderRules();
   if (!state.convs.length) return renderUpload();
+  if (path.startsWith('/transcripts/c/')) return renderTranscriptDetail(decodeURIComponent(path.slice('/transcripts/c/'.length)));
+  if (path.startsWith('/transcripts')) return renderTranscriptList();
   if (path.startsWith('/c/')) return renderDetail(decodeURIComponent(path.slice(3)));
   if (path.startsWith('/list')) return renderList(params);
   return renderOverview();
