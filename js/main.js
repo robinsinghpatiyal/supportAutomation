@@ -8,7 +8,8 @@ import { CATEGORIES, THRESHOLDS } from './config.js';
 import { dailyChart } from './chart.js';
 import { esc, fmtPct, fmtNum, label, fmtDate, toast, download, toCSV, parseCSV } from './ui.js';
 
-const ESC_KEY = 'apnaExpertAudit.escalations.v1';
+const ESC_KEY = 'apnaExpertAudit.escalations.v2';
+const LEGACY_ESC_KEY = 'apnaExpertAudit.escalations.v1';
 const PAGE_SIZE = 50;
 const SHORT = {
   eval_flagged: 'Eval flagged',
@@ -40,7 +41,22 @@ const app = document.getElementById('app');
 // ---------- escalations (stored in this browser) ----------
 
 function loadEscalations() {
-  try { return JSON.parse(localStorage.getItem(ESC_KEY) || '{}') || {}; } catch { return {}; }
+  try {
+    const current = localStorage.getItem(ESC_KEY);
+    if (current) return JSON.parse(current) || {};
+    const legacy = JSON.parse(localStorage.getItem(LEGACY_ESC_KEY) || '{}') || {};
+    const imported = Object.values(legacy).filter((e) => e && e.source === 'csv');
+    const emptyImports = imported.filter((e) => !e.note && !e.by);
+    // Older app versions could mistake a full conversation CSV for an escalation list.
+    // Discard that polluted store instead of migrating thousands of false escalations.
+    const polluted = imported.length >= 20 && emptyImports.length / imported.length >= 0.9;
+    const migrated = polluted ? {} : legacy;
+    localStorage.setItem(ESC_KEY, JSON.stringify(migrated));
+    localStorage.removeItem(LEGACY_ESC_KEY);
+    return migrated;
+  } catch {
+    return {};
+  }
 }
 function saveEscalations() {
   try { localStorage.setItem(ESC_KEY, JSON.stringify(state.escalations)); } catch { /* storage blocked: kept for this tab only */ }
@@ -49,6 +65,10 @@ function importEscalations(text, name) {
   const rows = parseCSV(text);
   if (!rows.length) return 0;
   const head = rows[0].map((h) => h.trim().toLowerCase());
+  const fullExportColumns = ['audit_queues', 'bot_score_pct', 'employer_messages', 'primary_intent', 'explicitly_resolved'];
+  if (fullExportColumns.filter((h) => head.includes(h)).length >= 2) {
+    throw new Error('This is a full conversation export, not an escalations CSV');
+  }
   let idCol = head.findIndex((h) => /conversation/.test(h));
   if (idCol < 0) idCol = head.findIndex((h) => h === 'id');
   const hasHeader = idCol >= 0;
@@ -95,8 +115,12 @@ async function loadFiles(fileList) {
           messages.push(`Could not read ${f.name}: ${e.message}`);
           continue;
         }
-        const n = importEscalations(text, f.name);
-        messages.push(`${n} escalations from ${f.name}`);
+        try {
+          const n = importEscalations(text, f.name);
+          messages.push(`${n} escalations from ${f.name}`);
+        } catch (importError) {
+          messages.push(`Could not read ${f.name}: ${importError.message}`);
+        }
       }
       continue;
     }
@@ -788,12 +812,22 @@ function renderRules() {
       <div class="row-actions">
         <button class="btn" id="esc-export" ${Object.keys(state.escalations).length ? '' : 'disabled'}>Download escalations CSV</button>
         <button class="btn" id="esc-import">Import escalations CSV</button>
+        <button class="btn danger" id="esc-clear" ${Object.keys(state.escalations).length ? '' : 'disabled'}>Clear saved escalations</button>
       </div>
     </div>`;
   app.querySelector('#esc-export').addEventListener('click', () => {
     exportEscalations();
   });
   app.querySelector('#esc-import').addEventListener('click', () => document.getElementById('esc-input').click());
+  app.querySelector('#esc-clear').addEventListener('click', () => {
+    if (!confirm('Remove all saved and imported escalations from this browser?')) return;
+    state.escalations = {};
+    localStorage.removeItem(ESC_KEY);
+    localStorage.removeItem(LEGACY_ESC_KEY);
+    runAudit(state.convs, state.escalations);
+    toast('All saved escalations cleared');
+    renderRules();
+  });
 }
 
 // ---------- routing ----------
@@ -821,9 +855,13 @@ document.getElementById('file-input').addEventListener('change', (e) => { loadFi
 document.getElementById('esc-input').addEventListener('change', async (e) => {
   const f = e.target.files[0];
   if (!f) return;
-  const n = importEscalations(await f.text(), f.name);
-  runAudit(state.convs, state.escalations);
-  toast(`${n} escalations imported`);
+  try {
+    const n = importEscalations(await f.text(), f.name);
+    runAudit(state.convs, state.escalations);
+    toast(`${n} escalations imported`);
+  } catch (error) {
+    toast(`Could not import ${f.name}: ${error.message}`);
+  }
   e.target.value = '';
   route();
 });
