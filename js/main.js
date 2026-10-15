@@ -426,6 +426,7 @@ function transcriptText(c) {
   const header = [
     'APNA EXPERT TRANSCRIPT',
     `Conversation ID: ${c.id || '–'}`,
+    `Name: ${c.userName || '–'}`,
     `User ID: ${transcriptUserId(c) || '–'}`,
     `Time (IST): ${c.dateIST || '–'} ${c.timeIST || ''}`.trim(),
     `Bot score: ${c.botScorePct === null ? '–' : `${Math.round(c.botScorePct)}%`}`,
@@ -511,15 +512,16 @@ function renderTranscriptListBody() {
       <button class="btn" id="download-filtered-transcripts" ${rows.length ? '' : 'disabled'}>Download filtered transcripts</button>
     </div>
     <div class="table-wrap"><table class="list">
-      <thead><tr><th>User ID</th><th>Conversation ID</th><th>Time (IST)</th><th class="num">Bot score</th><th>CSAT</th><th>Human handoff</th></tr></thead>
+      <thead><tr><th>Name</th><th>User ID</th><th>Conversation ID</th><th>Time (IST)</th><th class="num">Bot score</th><th>CSAT</th><th>Human handoff</th></tr></thead>
       <tbody>${slice.map((c) => `<tr class="row" data-id="${esc(c.id)}">
+        <td>${esc(c.userName || '–')}</td>
         <td class="num">${esc(transcriptUserId(c) || '–')}</td>
         <td class="num">${esc(c.id)}</td>
         <td class="when num">${esc(fmtDate(c.dateIST))}${c.dateIST ? ` ${esc(c.dateIST.slice(0, 4))}` : ''}<br><span class="muted">${esc(c.timeIST)}</span></td>
         <td class="num">${c.botScorePct === null ? '<span class="muted">–</span>' : `${Math.round(c.botScorePct)}%`}</td>
         <td>${c.csat ? `<span class="chip ${c.csat === 'yes' ? 'good' : 'alert'}">${esc(label(c.csat))}</span>` : '<span class="muted">Not given</span>'}</td>
         <td>${handoffChip(c)}</td>
-      </tr>`).join('') || '<tr><td colspan="6" class="muted" style="padding:24px">No transcripts match these filters.</td></tr>'}</tbody>
+      </tr>`).join('') || '<tr><td colspan="7" class="muted" style="padding:24px">No transcripts match these filters.</td></tr>'}</tbody>
     </table></div>
     ${pages > 1 ? `<div class="pager"><button class="btn" id="transcript-prev" ${state.transcriptPage === 1 ? 'disabled' : ''}>Previous</button><span class="muted">Page ${state.transcriptPage} of ${pages}</span><button class="btn" id="transcript-next" ${state.transcriptPage === pages ? 'disabled' : ''}>Next</button></div>` : ''}`;
   body.querySelectorAll('tr.row').forEach((tr) => tr.addEventListener('click', () => {
@@ -554,6 +556,7 @@ function renderTranscriptDetail(id) {
         <div>
           <h1>Transcript · ${esc(c.id)}</h1>
           <div class="meta">
+            <span>Name <b>${esc(c.userName || '–')}</b></span>
             <span>User ID <b class="num">${esc(transcriptUserId(c) || '–')}</b></span>
             <span>Time <b>${esc(fmtDate(c.dateIST))} ${c.dateIST ? esc(c.dateIST.slice(0, 4)) : ''}, ${esc(c.timeIST)} IST</b></span>
             <span>Bot score <b>${c.botScorePct === null ? '–' : `${Math.round(c.botScorePct)}%`}</b></span>
