@@ -1,0 +1,9 @@
+# never commit chat exports or escalation lists
+*.json
+!vercel.json
+*.ndjson
+*.csv
+.local-*
+.debug-*
+.vercel
+.DS_Store

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Apna Expert Audit</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232a78d6'/%3E%3Cpath d='M9 22l4-12h6l4 12h-4l-.8-3h-4.4l-.8 3zm5.6-6h2.8L16 11z' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Apna Expert Audit <span>support bot QA</span></div>
+    <nav class="nav">
+      <a href="#/">Overview</a>
+      <a href="#/list">Conversations</a>
+      <a href="#/rules">How it works</a>
+    </nav>
+    <div class="spacer"></div>
+    <span class="data-status" id="data-status">No data loaded</span>
+    <button class="btn" id="btn-upload">Add export file</button>
+    <button class="btn danger" id="btn-clear" data-needs-data disabled>Clear</button>
+  </header>
+  <main id="app"></main>
+  <div class="drop-overlay">Drop the export (.json) or an escalations file (.csv)</div>
+  <input type="file" id="file-input" accept=".json,.ndjson,.txt,.csv,application/json" multiple hidden>
+  <input type="file" id="esc-input" accept=".csv,text/csv" hidden>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
