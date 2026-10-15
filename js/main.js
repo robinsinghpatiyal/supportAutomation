@@ -399,14 +399,15 @@ function renderListBody() {
       <button class="btn" id="export-csv" ${rows.length ? '' : 'disabled'}>Export these to CSV</button>
     </div>
     <div class="table-wrap"><table class="list">
-      <thead><tr><th>When (IST)</th><th>Employer</th><th>First message</th><th>Intent</th><th class="num">Msgs</th><th>Handoff</th><th>Outcome</th><th class="num">Bot score</th><th>Audit queues</th></tr></thead>
+      <thead><tr><th>When (IST)</th><th>Employer</th><th>Employer number</th><th>First message</th><th>Intent</th><th class="num">Msgs</th><th>Handoff</th><th>Outcome</th><th class="num">Bot score</th><th>Audit queues</th></tr></thead>
       <tbody>${slice.map((c) => {
         const first = c.messages.find((m) => m.speaker === 'User');
         return `<tr class="row" data-id="${esc(c.id)}">
           <td class="when num">${esc(fmtDate(c.dateIST))}<br><span class="muted">${esc(c.timeIST)}</span></td>
           <td>${esc(c.userName || c.apnaEmployerId || '–')}
-            <br><span class="muted small">${esc(c.apnaEmployerId || '')}${c.phoneNumber ? ` · ${esc(c.phoneNumber)}` : ''}</span>
+            <br><span class="muted small">${esc(c.apnaEmployerId || '')}</span>
             ${c.companyName ? `<br><span class="muted small">${esc(c.companyName)}</span>` : ''}</td>
+          <td class="num">${esc(c.phoneNumber || '–')}</td>
           <td class="first-msg">${esc(first ? truncate(first.text, 90) : '(no message)')}</td>
           <td>${esc(label(c.primaryIntent))}</td>
           <td class="num">${c.userMessages}</td>
@@ -415,7 +416,7 @@ function renderListBody() {
           <td class="num">${c.botScorePct === null ? '<span class="muted">–</span>' : `${Math.round(c.botScorePct)}%`}${c.helpfulness10 !== null ? `<br><span class="muted small">${c.helpfulness10}/10 helpful</span>` : ''}</td>
           <td>${queueChips(c)}</td>
         </tr>`;
-      }).join('') || '<tr><td colspan="9" class="muted" style="padding:24px">No chats match these filters.</td></tr>'}</tbody>
+      }).join('') || '<tr><td colspan="10" class="muted" style="padding:24px">No chats match these filters.</td></tr>'}</tbody>
     </table></div>
     ${pages > 1 ? `<div class="pager"><button class="btn" id="prev" ${state.page === 1 ? 'disabled' : ''}>Previous</button><span class="muted">Page ${state.page} of ${pages}</span><button class="btn" id="next" ${state.page === pages ? 'disabled' : ''}>Next</button></div>` : ''}`;
   body.querySelectorAll('tr.row').forEach((tr) => tr.addEventListener('click', () => { location.hash = `#/c/${encodeURIComponent(tr.dataset.id)}`; }));
