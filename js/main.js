@@ -30,7 +30,7 @@ const state = {
   files: [],
   escalations: loadEscalations(),
   filters: { from: '', to: '', q: '', cat: '', handoff: '', hideTests: true, engagedOnly: true },
-  transcriptFilters: { userId: '', conversationId: '', handoff: '', csat: '', sort: 'newest' },
+  transcriptFilters: { userId: '', phoneNumber: '', conversationId: '', handoff: '', csat: '', sort: 'newest' },
   page: 1,
   transcriptPage: 1,
 };
@@ -171,9 +171,11 @@ function transcriptUserId(c) {
 function transcriptFiltered() {
   const f = state.transcriptFilters;
   const userId = f.userId.trim().toLowerCase();
+  const phoneNumber = f.phoneNumber.trim().toLowerCase();
   const conversationId = f.conversationId.trim().toLowerCase();
   const rows = state.convs.filter((c) => {
     if (userId && !String(transcriptUserId(c)).toLowerCase().includes(userId)) return false;
+    if (phoneNumber && !String(c.phoneNumber || '').toLowerCase().includes(phoneNumber)) return false;
     if (conversationId && !String(c.id || '').toLowerCase().includes(conversationId)) return false;
     if (f.handoff === 'yes' && !c.handoff) return false;
     if (f.handoff === 'no' && c.handoff) return false;
@@ -331,7 +333,7 @@ function renderList(params) {
   app.innerHTML = `
     <div class="section-head"><h2>Conversations</h2></div>
     <div class="filters card pad" id="list-filters">
-      <div class="field"><label for="f-q">Search</label><input type="search" id="f-q" placeholder="Employer id, company, conversation id or any text" value="${esc(f.q)}"></div>
+      <div class="field"><label for="f-q">Search</label><input type="search" id="f-q" placeholder="Name, phone, employer id, conversation id or any text" value="${esc(f.q)}"></div>
       <div class="field"><label for="f-cat">Audit queue</label>
         <select id="f-cat">
           <option value="">All chats</option>
@@ -402,7 +404,9 @@ function renderListBody() {
         const first = c.messages.find((m) => m.speaker === 'User');
         return `<tr class="row" data-id="${esc(c.id)}">
           <td class="when num">${esc(fmtDate(c.dateIST))}<br><span class="muted">${esc(c.timeIST)}</span></td>
-          <td>${esc(c.apnaEmployerId || '–')}<br><span class="muted small">${esc(c.companyName || '')}</span></td>
+          <td>${esc(c.userName || c.apnaEmployerId || '–')}
+            <br><span class="muted small">${esc(c.apnaEmployerId || '')}${c.phoneNumber ? ` · ${esc(c.phoneNumber)}` : ''}</span>
+            ${c.companyName ? `<br><span class="muted small">${esc(c.companyName)}</span>` : ''}</td>
           <td class="first-msg">${esc(first ? truncate(first.text, 90) : '(no message)')}</td>
           <td>${esc(label(c.primaryIntent))}</td>
           <td class="num">${c.userMessages}</td>
@@ -428,6 +432,7 @@ function transcriptText(c) {
     `Conversation ID: ${c.id || '–'}`,
     `Name: ${c.userName || '–'}`,
     `User ID: ${transcriptUserId(c) || '–'}`,
+    `Employer number: ${c.phoneNumber || '–'}`,
     `Time (IST): ${c.dateIST || '–'} ${c.timeIST || ''}`.trim(),
     `Bot score: ${c.botScorePct === null ? '–' : `${Math.round(c.botScorePct)}%`}`,
     `CSAT: ${c.csat || 'not given'}`,
@@ -458,6 +463,7 @@ function renderTranscriptList() {
     </div>
     <div class="filters card pad" id="transcript-filters">
       <div class="field"><label for="tf-user">User ID</label><input type="search" id="tf-user" placeholder="Search user ID" value="${esc(f.userId)}"></div>
+      <div class="field"><label for="tf-phone">Employer number</label><input type="search" id="tf-phone" placeholder="Search phone number" value="${esc(f.phoneNumber)}"></div>
       <div class="field"><label for="tf-conversation">Conversation ID</label><input type="search" id="tf-conversation" placeholder="Search conversation ID" value="${esc(f.conversationId)}"></div>
       <div class="field"><label for="tf-handoff">Human handoff</label>
         <select id="tf-handoff">
@@ -491,6 +497,7 @@ function renderTranscriptList() {
     renderTranscriptListBody();
   };
   filters.querySelector('#tf-user').addEventListener('input', (e) => update('userId', e.target.value));
+  filters.querySelector('#tf-phone').addEventListener('input', (e) => update('phoneNumber', e.target.value));
   filters.querySelector('#tf-conversation').addEventListener('input', (e) => update('conversationId', e.target.value));
   filters.querySelector('#tf-handoff').addEventListener('change', (e) => update('handoff', e.target.value));
   filters.querySelector('#tf-csat').addEventListener('change', (e) => update('csat', e.target.value));
@@ -512,16 +519,17 @@ function renderTranscriptListBody() {
       <button class="btn" id="download-filtered-transcripts" ${rows.length ? '' : 'disabled'}>Download filtered transcripts</button>
     </div>
     <div class="table-wrap"><table class="list">
-      <thead><tr><th>Name</th><th>User ID</th><th>Conversation ID</th><th>Time (IST)</th><th class="num">Bot score</th><th>CSAT</th><th>Human handoff</th></tr></thead>
+      <thead><tr><th>Name</th><th>Employer number</th><th>User ID</th><th>Conversation ID</th><th>Time (IST)</th><th class="num">Bot score</th><th>CSAT</th><th>Human handoff</th></tr></thead>
       <tbody>${slice.map((c) => `<tr class="row" data-id="${esc(c.id)}">
         <td>${esc(c.userName || '–')}</td>
+        <td class="num">${esc(c.phoneNumber || '–')}</td>
         <td class="num">${esc(transcriptUserId(c) || '–')}</td>
         <td class="num">${esc(c.id)}</td>
         <td class="when num">${esc(fmtDate(c.dateIST))}${c.dateIST ? ` ${esc(c.dateIST.slice(0, 4))}` : ''}<br><span class="muted">${esc(c.timeIST)}</span></td>
         <td class="num">${c.botScorePct === null ? '<span class="muted">–</span>' : `${Math.round(c.botScorePct)}%`}</td>
         <td>${c.csat ? `<span class="chip ${c.csat === 'yes' ? 'good' : 'alert'}">${esc(label(c.csat))}</span>` : '<span class="muted">Not given</span>'}</td>
         <td>${handoffChip(c)}</td>
-      </tr>`).join('') || '<tr><td colspan="7" class="muted" style="padding:24px">No transcripts match these filters.</td></tr>'}</tbody>
+      </tr>`).join('') || '<tr><td colspan="8" class="muted" style="padding:24px">No transcripts match these filters.</td></tr>'}</tbody>
     </table></div>
     ${pages > 1 ? `<div class="pager"><button class="btn" id="transcript-prev" ${state.transcriptPage === 1 ? 'disabled' : ''}>Previous</button><span class="muted">Page ${state.transcriptPage} of ${pages}</span><button class="btn" id="transcript-next" ${state.transcriptPage === pages ? 'disabled' : ''}>Next</button></div>` : ''}`;
   body.querySelectorAll('tr.row').forEach((tr) => tr.addEventListener('click', () => {
@@ -557,6 +565,7 @@ function renderTranscriptDetail(id) {
           <h1>Transcript · ${esc(c.id)}</h1>
           <div class="meta">
             <span>Name <b>${esc(c.userName || '–')}</b></span>
+            <span>Employer number <b class="num">${esc(c.phoneNumber || '–')}</b></span>
             <span>User ID <b class="num">${esc(transcriptUserId(c) || '–')}</b></span>
             <span>Time <b>${esc(fmtDate(c.dateIST))} ${c.dateIST ? esc(c.dateIST.slice(0, 4)) : ''}, ${esc(c.timeIST)} IST</b></span>
             <span>Bot score <b>${c.botScorePct === null ? '–' : `${Math.round(c.botScorePct)}%`}</b></span>
@@ -579,11 +588,11 @@ function renderTranscriptDetail(id) {
 const truncate = (t, n) => { const s = String(t || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 
 function exportCSV(rows) {
-  const head = ['conversation_id', 'date_ist', 'time_ist', 'apna_employer_id', 'company_name', 'entry_page', 'primary_intent',
+  const head = ['conversation_id', 'date_ist', 'time_ist', 'employer_name', 'employer_number', 'apna_employer_id', 'company_name', 'entry_page', 'primary_intent',
     'employer_messages', 'bot_replies', 'handoff', 'outcome', 'explicitly_resolved', 'bot_score_pct', 'helpfulness_10',
     'csat', 'audit_queues', 'needs_check', 'reasons', 'escalation_note', 'summary', 'transcript'];
   const data = rows.map((c) => [
-    c.id, c.dateIST, c.timeIST, c.apnaEmployerId, c.companyName, c.entryPage, c.primaryIntent,
+    c.id, c.dateIST, c.timeIST, c.userName, c.phoneNumber, c.apnaEmployerId, c.companyName, c.entryPage, c.primaryIntent,
     c.userMessages, c.botReplies, c.handoffStatus, c.outcome, explicitlyResolved(c) ? 'yes' : 'no', c.botScorePct, c.helpfulness10,
     c.csat, c.categories.map((k) => CATEGORIES.find((x) => x.key === k).name).join('; '), c.alerts.join('; '),
     c.categories.map((k) => `${SHORT[k]}: ${c.audit[k].reasons.join(' ')}`).join(' | '),
@@ -610,6 +619,8 @@ function renderDetail(id) {
           <h1>Chat on ${esc(fmtDate(c.dateIST))} ${esc(c.dateIST.slice(0, 4))}, ${esc(c.timeIST)} IST</h1>
           <div class="meta">
             <span>Conversation <b class="num">${esc(c.id)}</b> <button class="btn small" id="copy-id" style="padding:1px 8px">Copy</button></span>
+            ${c.userName ? `<span>Name <b>${esc(c.userName)}</b></span>` : ''}
+            ${c.phoneNumber ? `<span>Employer number <b class="num">${esc(c.phoneNumber)}</b></span>` : ''}
             <span>Apna employer <b>${esc(c.apnaEmployerId || '–')}</b></span>
             ${c.companyName ? `<span>Company <b>${esc(c.companyName)}</b></span>` : ''}
             ${c.entryPage ? `<span>Opened from <b>${esc(label(c.entryPage))}</b></span>` : ''}

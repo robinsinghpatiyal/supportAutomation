@@ -153,6 +153,7 @@ export function parseBlueMachinesExport(text) {
       },
       blueMachines: {
         userDisplayName: get('userDisplayName') || null,
+        userPhoneNumber: get('userPhoneNumber') || null,
         agentName: get('agentName') || null,
         durationSeconds: numberCell(get('durationSeconds')),
         statusType: get('statusType') || null,
@@ -278,6 +279,8 @@ function fromRaw(rec) {
     employerId: str(ident.employer_id),
     userName: str(rec.userDisplayName) || str(rec.blueMachines && rec.blueMachines.userDisplayName)
       || str(payload.user_name) || str(ident.user_name) || str(ident.employer_name),
+    phoneNumber: str(rec.userPhoneNumber) || str(rec.blueMachines && rec.blueMachines.userPhoneNumber)
+      || str(payload.user_phone_number) || str(payload.phone_number) || str(ident.phone_number),
     companyName: str(ident.company_name),
     sessionId: str(payload.session_id) || str(ident.session_id),
     entryPage: str(ev && ev.entry_page),
@@ -341,6 +344,7 @@ function fromFlat(rec) {
     apnaEmployerId: str(rec.apna_employer_id) || str(ident.apna_employer_id),
     employerId: str(rec.employer_id) || str(ident.employer_id),
     userName: str(rec.user_display_name) || str(rec.user_name) || str(ident.user_name) || str(ident.employer_name),
+    phoneNumber: str(rec.user_phone_number) || str(rec.phone_number) || str(ident.phone_number),
     companyName: str(rec.company_name) || str(ident.company_name),
     sessionId: str(rec.session_id) || str(ident.session_id),
     entryPage: str(rec.entry_page),
@@ -423,7 +427,7 @@ function enrich(c) {
     c.botScorePct = scores.length ? Math.round((1000 * scores.reduce((a, b) => a + b, 0)) / (5 * scores.length)) / 10 : null;
   }
   c.isTest = TEST_CONVERSATION_PATTERNS.some((re) => re.test(c.id || ''));
-  c.searchText = [c.id, c.apnaEmployerId, c.employerId, c.userName, c.companyName, c.sessionId, c.primaryIntent,
+  c.searchText = [c.id, c.apnaEmployerId, c.employerId, c.userName, c.phoneNumber, c.companyName, c.sessionId, c.primaryIntent,
     ...msgs.map((m) => m.text)].filter(Boolean).join(' ').toLowerCase();
   return c;
 }
