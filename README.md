@@ -77,6 +77,7 @@ All thresholds, keyword lists and fixed bot lines are in **`js/config.js`**.
 | Number | Definition |
 |---|---|
 | Engaged chats | Chats where the employer sent at least one message |
+| Avg conversation time | Average BlueMachines interaction duration where `durationSeconds` is available |
 | Contained by the bot | Engaged chats with no handoff (no `agent_handoff`, connect line, support-hours line or agent message) |
 | Employer said resolved | Of chats where the employer answered the resolve question yes or no, the share whose last answer was yes |
 | Avg bot score | 100 × sum of turn scores ÷ (5 × turns), averaged over evaluated chats |
@@ -101,6 +102,6 @@ All thresholds, keyword lists and fixed bot lines are in **`js/config.js`**.
 ## Known limits
 
 - **Escalations are saved per browser** (localStorage). To share them, use *How it works → Download escalations CSV*, and import that CSV on another machine.
-- **Test chats** are hidden only when their conversation id matches `TEST_CONVERSATION_PATTERNS` in `js/config.js` (today: ids starting with `bm_dummy` or `test`).
+- **Test chats** are hidden when their conversation id matches `TEST_CONVERSATION_PATTERNS`, their Apna employer id is in `TEST_USER_IDS`, or their phone number matches one associated with those test users in the loaded data.
 - **No timing or CSAT yet:** the export has no chat start/end times, handoff times or CSAT answers. Session-time numbers will need those fields from BlueMachines.
 - **When the analytics tables are ready**, replace the file upload with a fetch from the analytics API: `loadText()` in `js/main.js` already takes the raw text of an export, so an API that returns the same documents plugs in there.

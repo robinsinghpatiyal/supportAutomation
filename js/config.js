@@ -15,6 +15,14 @@ export const THRESHOLDS = {
 // Conversations whose id matches one of these are internal tests (hidden by default)
 export const TEST_CONVERSATION_PATTERNS = [/^bm_dummy/i, /^test/i];
 
+// Apna employer IDs used by internal team members. During import, phone numbers
+// belonging to these IDs are also treated as tests without storing those numbers here.
+export const TEST_USER_IDS = new Set([
+  '58278958', '55831297', '65906147', '18131429', '57999454', '33840438',
+  '65951096', '62964442', '39317100', '11532763', '47951860', '10407313',
+  '22717143', '64661331', '53980663', '62203798', '66296336', '58106048',
+]);
+
 // Frustration & Negative Sentiment: words or phrases in the EMPLOYER's messages.
 // Single words match whole words only; phrases match anywhere. Case does not matter.
 export const FRUSTRATION_TERMS = [

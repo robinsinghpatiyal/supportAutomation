@@ -37,6 +37,7 @@ export function summarize(convs) {
     resolveAsked: asked.length,
     resolveYesPct: pct(said('yes'), asked.length),
     explicitResolvedPct: pct(engaged.filter(explicitlyResolved).length, engaged.length),
+    avgConversationSeconds: avg(convs.map((c) => c.durationSeconds).filter((x) => x !== null)),
     avgBotScorePct: avg(evaluated.map((c) => c.botScorePct).filter((x) => x !== null)),
     avgHelpfulness: avg(evaluated.map((c) => c.helpfulness10).filter((x) => x !== null)),
     csatGiven: csatGiven.length,

@@ -30,7 +30,7 @@ const state = {
   files: [],
   escalations: loadEscalations(),
   filters: { from: '', to: '', q: '', cat: '', handoff: '', hideTests: true, engagedOnly: true },
-  transcriptFilters: { userId: '', phoneNumber: '', conversationId: '', handoff: '', csat: '', sort: 'newest' },
+  transcriptFilters: { userId: '', phoneNumber: '', conversationId: '', handoff: '', csat: '', sort: 'newest', hideTests: true },
   page: 1,
   transcriptPage: 1,
 };
@@ -168,12 +168,24 @@ function transcriptUserId(c) {
   return c.apnaEmployerId || c.employerId || '';
 }
 
+function fmtDuration(seconds) {
+  if (seconds === null || seconds === undefined || !Number.isFinite(Number(seconds))) return '–';
+  const total = Math.max(0, Math.round(Number(seconds)));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours) return `${hours}h ${minutes}m ${secs}s`;
+  if (minutes) return `${minutes}m ${secs}s`;
+  return `${secs}s`;
+}
+
 function transcriptFiltered() {
   const f = state.transcriptFilters;
   const userId = f.userId.trim().toLowerCase();
   const phoneNumber = f.phoneNumber.trim().toLowerCase();
   const conversationId = f.conversationId.trim().toLowerCase();
   const rows = state.convs.filter((c) => {
+    if (f.hideTests && c.isTest) return false;
     if (userId && !String(transcriptUserId(c)).toLowerCase().includes(userId)) return false;
     if (phoneNumber && !String(c.phoneNumber || '').toLowerCase().includes(phoneNumber)) return false;
     if (conversationId && !String(c.id || '').toLowerCase().includes(conversationId)) return false;
@@ -280,6 +292,7 @@ function renderOverviewBody() {
   const s = summarize(convs);
   const tiles = [
     ['Engaged chats', s.engaged, `of ${s.chats} chats; ${s.chats - s.engaged} closed without a message`],
+    ['Avg conversation time', fmtDuration(s.avgConversationSeconds), 'Average duration in the loaded export'],
     ['Contained by the bot', fmtPct(s.containmentPct), `${s.handedOff} handed off (${s.supportClosed} while support was closed)${s.saidOnly ? `; ${s.saidOnly} told "connecting" with no handoff` : ''}`],
     ['Employer said resolved', fmtPct(s.resolveYesPct), s.resolveAsked ? `of ${s.resolveAsked} asked "Did this resolve your query?"` : 'No one was asked yet'],
     ['Avg bot score', s.avgBotScorePct === null ? '–' : `${Math.round(s.avgBotScorePct)}%`, `evaluator turn scores, ${s.evaluated} evaluated chats`],
@@ -399,11 +412,12 @@ function renderListBody() {
       <button class="btn" id="export-csv" ${rows.length ? '' : 'disabled'}>Export these to CSV</button>
     </div>
     <div class="table-wrap"><table class="list">
-      <thead><tr><th>When (IST)</th><th>Employer</th><th>Employer number</th><th>First message</th><th>Intent</th><th class="num">Msgs</th><th>Handoff</th><th>Outcome</th><th class="num">Bot score</th><th>Audit queues</th></tr></thead>
+      <thead><tr><th>When (IST)</th><th>Conversation time</th><th>Employer</th><th>Employer number</th><th>First message</th><th>Intent</th><th class="num">Msgs</th><th>Handoff</th><th>Outcome</th><th class="num">Bot score</th><th>Audit queues</th></tr></thead>
       <tbody>${slice.map((c) => {
         const first = c.messages.find((m) => m.speaker === 'User');
         return `<tr class="row" data-id="${esc(c.id)}">
           <td class="when num">${esc(fmtDate(c.dateIST))}<br><span class="muted">${esc(c.timeIST)}</span></td>
+          <td class="num">${esc(fmtDuration(c.durationSeconds))}</td>
           <td>${esc(c.userName || c.apnaEmployerId || '–')}
             <br><span class="muted small">${esc(c.apnaEmployerId || '')}</span>
             ${c.companyName ? `<br><span class="muted small">${esc(c.companyName)}</span>` : ''}</td>
@@ -416,7 +430,7 @@ function renderListBody() {
           <td class="num">${c.botScorePct === null ? '<span class="muted">–</span>' : `${Math.round(c.botScorePct)}%`}${c.helpfulness10 !== null ? `<br><span class="muted small">${c.helpfulness10}/10 helpful</span>` : ''}</td>
           <td>${queueChips(c)}</td>
         </tr>`;
-      }).join('') || '<tr><td colspan="10" class="muted" style="padding:24px">No chats match these filters.</td></tr>'}</tbody>
+      }).join('') || '<tr><td colspan="11" class="muted" style="padding:24px">No chats match these filters.</td></tr>'}</tbody>
     </table></div>
     ${pages > 1 ? `<div class="pager"><button class="btn" id="prev" ${state.page === 1 ? 'disabled' : ''}>Previous</button><span class="muted">Page ${state.page} of ${pages}</span><button class="btn" id="next" ${state.page === pages ? 'disabled' : ''}>Next</button></div>` : ''}`;
   body.querySelectorAll('tr.row').forEach((tr) => tr.addEventListener('click', () => { location.hash = `#/c/${encodeURIComponent(tr.dataset.id)}`; }));
@@ -435,6 +449,7 @@ function transcriptText(c) {
     `User ID: ${transcriptUserId(c) || '–'}`,
     `Employer number: ${c.phoneNumber || '–'}`,
     `Time (IST): ${c.dateIST || '–'} ${c.timeIST || ''}`.trim(),
+    `Conversation time: ${fmtDuration(c.durationSeconds)}`,
     `Bot score: ${c.botScorePct === null ? '–' : `${Math.round(c.botScorePct)}%`}`,
     `CSAT: ${c.csat || 'not given'}`,
     `Human handoff: ${handoff}`,
@@ -488,6 +503,7 @@ function renderTranscriptList() {
           <option value="score_desc" ${f.sort === 'score_desc' ? 'selected' : ''}>Bot score high–low</option>
           <option value="score_asc" ${f.sort === 'score_asc' ? 'selected' : ''}>Bot score low–high</option>
         </select></div>
+      <label class="check"><input type="checkbox" id="tf-tests" ${f.hideTests ? 'checked' : ''}> Hide test users</label>
     </div>
     <div class="section card" id="transcript-list-body"></div>`;
 
@@ -503,6 +519,7 @@ function renderTranscriptList() {
   filters.querySelector('#tf-handoff').addEventListener('change', (e) => update('handoff', e.target.value));
   filters.querySelector('#tf-csat').addEventListener('change', (e) => update('csat', e.target.value));
   filters.querySelector('#tf-sort').addEventListener('change', (e) => update('sort', e.target.value));
+  filters.querySelector('#tf-tests').addEventListener('change', (e) => update('hideTests', e.target.checked));
   app.querySelector('#download-all-transcripts').addEventListener('click', () => downloadTranscripts(state.convs));
   renderTranscriptListBody();
 }
@@ -520,17 +537,18 @@ function renderTranscriptListBody() {
       <button class="btn" id="download-filtered-transcripts" ${rows.length ? '' : 'disabled'}>Download filtered transcripts</button>
     </div>
     <div class="table-wrap"><table class="list">
-      <thead><tr><th>Name</th><th>Employer number</th><th>User ID</th><th>Conversation ID</th><th>Time (IST)</th><th class="num">Bot score</th><th>CSAT</th><th>Human handoff</th></tr></thead>
+      <thead><tr><th>Name</th><th>Employer number</th><th>User ID</th><th>Conversation ID</th><th>Time (IST)</th><th>Conversation time</th><th class="num">Bot score</th><th>CSAT</th><th>Human handoff</th></tr></thead>
       <tbody>${slice.map((c) => `<tr class="row" data-id="${esc(c.id)}">
-        <td>${esc(c.userName || '–')}</td>
+        <td>${esc(c.userName || '–')}${c.isTest ? '<br><span class="chip warn">Test user</span>' : ''}</td>
         <td class="num">${esc(c.phoneNumber || '–')}</td>
         <td class="num">${esc(transcriptUserId(c) || '–')}</td>
         <td class="num">${esc(c.id)}</td>
         <td class="when num">${esc(fmtDate(c.dateIST))}${c.dateIST ? ` ${esc(c.dateIST.slice(0, 4))}` : ''}<br><span class="muted">${esc(c.timeIST)}</span></td>
+        <td class="num">${esc(fmtDuration(c.durationSeconds))}</td>
         <td class="num">${c.botScorePct === null ? '<span class="muted">–</span>' : `${Math.round(c.botScorePct)}%`}</td>
         <td>${c.csat ? `<span class="chip ${c.csat === 'yes' ? 'good' : 'alert'}">${esc(label(c.csat))}</span>` : '<span class="muted">Not given</span>'}</td>
         <td>${handoffChip(c)}</td>
-      </tr>`).join('') || '<tr><td colspan="8" class="muted" style="padding:24px">No transcripts match these filters.</td></tr>'}</tbody>
+      </tr>`).join('') || '<tr><td colspan="9" class="muted" style="padding:24px">No transcripts match these filters.</td></tr>'}</tbody>
     </table></div>
     ${pages > 1 ? `<div class="pager"><button class="btn" id="transcript-prev" ${state.transcriptPage === 1 ? 'disabled' : ''}>Previous</button><span class="muted">Page ${state.transcriptPage} of ${pages}</span><button class="btn" id="transcript-next" ${state.transcriptPage === pages ? 'disabled' : ''}>Next</button></div>` : ''}`;
   body.querySelectorAll('tr.row').forEach((tr) => tr.addEventListener('click', () => {
@@ -569,6 +587,7 @@ function renderTranscriptDetail(id) {
             <span>Employer number <b class="num">${esc(c.phoneNumber || '–')}</b></span>
             <span>User ID <b class="num">${esc(transcriptUserId(c) || '–')}</b></span>
             <span>Time <b>${esc(fmtDate(c.dateIST))} ${c.dateIST ? esc(c.dateIST.slice(0, 4)) : ''}, ${esc(c.timeIST)} IST</b></span>
+            <span>Conversation time <b>${esc(fmtDuration(c.durationSeconds))}</b></span>
             <span>Bot score <b>${c.botScorePct === null ? '–' : `${Math.round(c.botScorePct)}%`}</b></span>
             <span>CSAT <b>${esc(c.csat || 'Not given')}</b></span>
             <span>Human handoff ${handoffChip(c)}</span>
@@ -589,11 +608,11 @@ function renderTranscriptDetail(id) {
 const truncate = (t, n) => { const s = String(t || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 
 function exportCSV(rows) {
-  const head = ['conversation_id', 'date_ist', 'time_ist', 'employer_name', 'employer_number', 'apna_employer_id', 'company_name', 'entry_page', 'primary_intent',
+  const head = ['conversation_id', 'date_ist', 'time_ist', 'conversation_seconds', 'employer_name', 'employer_number', 'apna_employer_id', 'company_name', 'entry_page', 'primary_intent',
     'employer_messages', 'bot_replies', 'handoff', 'outcome', 'explicitly_resolved', 'bot_score_pct', 'helpfulness_10',
     'csat', 'audit_queues', 'needs_check', 'reasons', 'escalation_note', 'summary', 'transcript'];
   const data = rows.map((c) => [
-    c.id, c.dateIST, c.timeIST, c.userName, c.phoneNumber, c.apnaEmployerId, c.companyName, c.entryPage, c.primaryIntent,
+    c.id, c.dateIST, c.timeIST, c.durationSeconds, c.userName, c.phoneNumber, c.apnaEmployerId, c.companyName, c.entryPage, c.primaryIntent,
     c.userMessages, c.botReplies, c.handoffStatus, c.outcome, explicitlyResolved(c) ? 'yes' : 'no', c.botScorePct, c.helpfulness10,
     c.csat, c.categories.map((k) => CATEGORIES.find((x) => x.key === k).name).join('; '), c.alerts.join('; '),
     c.categories.map((k) => `${SHORT[k]}: ${c.audit[k].reasons.join(' ')}`).join(' | '),
@@ -623,6 +642,7 @@ function renderDetail(id) {
             ${c.userName ? `<span>Name <b>${esc(c.userName)}</b></span>` : ''}
             ${c.phoneNumber ? `<span>Employer number <b class="num">${esc(c.phoneNumber)}</b></span>` : ''}
             <span>Apna employer <b>${esc(c.apnaEmployerId || '–')}</b></span>
+            <span>Conversation time <b>${esc(fmtDuration(c.durationSeconds))}</b></span>
             ${c.companyName ? `<span>Company <b>${esc(c.companyName)}</b></span>` : ''}
             ${c.entryPage ? `<span>Opened from <b>${esc(label(c.entryPage))}</b></span>` : ''}
             ${c.sessionId ? `<span>Session <b class="num">${esc(c.sessionId)}</b></span>` : ''}
@@ -741,6 +761,7 @@ function renderRules() {
       <h2 style="margin-top:24px">Numbers on the overview</h2>
       <dl>
         <dt>Engaged chats</dt><dd>Chats where the employer sent at least one message.</dd>
+        <dt>Avg conversation time</dt><dd>Average BlueMachines interaction duration for chats where a duration is available.</dd>
         <dt>Contained by the bot</dt><dd>Engaged chats with no handoff (no agent_handoff call, connect line, support-hours line or agent message).</dd>
         <dt>Employer said resolved</dt><dd>Of chats where the bot asked "Did this resolve your query?" and the employer answered yes or no, the share whose last answer was yes.</dd>
         <dt>Avg bot score</dt><dd>100 × sum of the evaluator's turn scores ÷ (5 × number of turns), averaged over evaluated chats.</dd>

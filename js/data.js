@@ -7,7 +7,7 @@
 //  2. Flattened rows (from 14 Oct 2026): { conversation_id, chat_date_ist, agent_handoff, turns: [...],
 //     transcript_json: [...], metadata: {...}, ... }
 
-import { BOT_LINES, TEST_CONVERSATION_PATTERNS, ANSWER_NO, ANSWER_YES } from './config.js';
+import { BOT_LINES, TEST_CONVERSATION_PATTERNS, TEST_USER_IDS, ANSWER_NO, ANSWER_YES } from './config.js';
 import { parseCSV } from './csv.js';
 
 const ANSWER = { yes: ANSWER_YES, no: ANSWER_NO };
@@ -275,6 +275,7 @@ function fromRaw(rec) {
     id: str(rec.conversationId) || str(payload.conversation_id) || str(rec._id),
     mongoId: str(rec._id),
     createdAt: asDate(rec.createdAt) || asDate(rec.updatedAt),
+    durationSeconds: num(rec.durationSeconds) ?? num(rec.blueMachines && rec.blueMachines.durationSeconds),
     apnaEmployerId: str(payload.user_id) || str(rec.userId) || str(ident.apna_employer_id),
     employerId: str(ident.employer_id),
     userName: str(rec.userDisplayName) || str(rec.blueMachines && rec.blueMachines.userDisplayName)
@@ -336,11 +337,16 @@ function fromFlat(rec) {
     tags: list(t.tags),
     tools: Array.isArray(t.tool_calls_json) && t.tool_calls_json.length ? toolsFromCalls(t.tool_calls_json) : toolsFromString(t.tools_used),
   }));
+  const botSessionSeconds = num(rec.bot_session_seconds);
+  const humanSessionSeconds = num(rec.human_session_seconds);
+  const durationSeconds = num(rec.duration_seconds)
+    ?? (botSessionSeconds !== null || humanSessionSeconds !== null ? (botSessionSeconds || 0) + (humanSessionSeconds || 0) : null);
   return {
     shape: 'flat',
     id: str(rec.conversation_id) || str(rec.conversationId) || str(rec._id),
     mongoId: str(rec._id),
     createdAt: asDate(rec.received_at_utc) || asDate(rec.createdAt) || asDate(rec.started_at_utc),
+    durationSeconds,
     apnaEmployerId: str(rec.apna_employer_id) || str(ident.apna_employer_id),
     employerId: str(rec.employer_id) || str(ident.employer_id),
     userName: str(rec.user_display_name) || str(rec.user_name) || str(ident.user_name) || str(ident.employer_name),
@@ -371,8 +377,8 @@ function fromFlat(rec) {
     checks: meta.checks || {},
     systemIssues: Array.isArray(meta.system_issues) ? meta.system_issues : [],
     turns,
-    botSessionSeconds: num(rec.bot_session_seconds),
-    humanSessionSeconds: num(rec.human_session_seconds),
+    botSessionSeconds,
+    humanSessionSeconds,
     raw: rec,
   };
 }
@@ -426,7 +432,8 @@ function enrich(c) {
     const scores = c.turns.map((t) => t.score).filter((s) => s !== null);
     c.botScorePct = scores.length ? Math.round((1000 * scores.reduce((a, b) => a + b, 0)) / (5 * scores.length)) / 10 : null;
   }
-  c.isTest = TEST_CONVERSATION_PATTERNS.some((re) => re.test(c.id || ''));
+  c.isTest = TEST_CONVERSATION_PATTERNS.some((re) => re.test(c.id || ''))
+    || TEST_USER_IDS.has(c.apnaEmployerId || '');
   c.searchText = [c.id, c.apnaEmployerId, c.employerId, c.userName, c.phoneNumber, c.companyName, c.sessionId, c.primaryIntent,
     ...msgs.map((m) => m.text)].filter(Boolean).join(' ').toLowerCase();
   return c;
@@ -457,5 +464,11 @@ export function mergeConversations(existing, records) {
     byId.set(c.id, prev ? better(prev, c) : c);
   }
   const all = [...byId.values()].sort((a, b) => (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0));
+  const testPhoneNumbers = new Set(all
+    .filter((c) => TEST_USER_IDS.has(c.apnaEmployerId || '') && c.phoneNumber)
+    .map((c) => c.phoneNumber));
+  all.forEach((c) => {
+    if (c.phoneNumber && testPhoneNumbers.has(c.phoneNumber)) c.isTest = true;
+  });
   return { conversations: all, skipped };
 }
