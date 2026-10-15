@@ -406,10 +406,11 @@ function renderListBody() {
   state.page = Math.min(state.page, pages);
   const slice = rows.slice((state.page - 1) * PAGE_SIZE, state.page * PAGE_SIZE);
   const body = app.querySelector('#list-body');
+  const escalationExport = f.cat === 'support_escalation';
   body.innerHTML = `
     <div class="pager" style="justify-content:space-between">
       <span class="muted">${rows.length} chats</span>
-      <button class="btn" id="export-csv" ${rows.length ? '' : 'disabled'}>Export these to CSV</button>
+      <button class="btn" id="export-csv" ${rows.length ? '' : 'disabled'}>${escalationExport ? 'Download escalations CSV' : 'Export these to CSV'}</button>
     </div>
     <div class="table-wrap"><table class="list">
       <thead><tr><th>When (IST)</th><th>Conversation time</th><th>Employer</th><th>Employer number</th><th>First message</th><th>Intent</th><th class="num">Msgs</th><th>Handoff</th><th>Outcome</th><th class="num">Bot score</th><th>Audit queues</th></tr></thead>
@@ -434,7 +435,10 @@ function renderListBody() {
     </table></div>
     ${pages > 1 ? `<div class="pager"><button class="btn" id="prev" ${state.page === 1 ? 'disabled' : ''}>Previous</button><span class="muted">Page ${state.page} of ${pages}</span><button class="btn" id="next" ${state.page === pages ? 'disabled' : ''}>Next</button></div>` : ''}`;
   body.querySelectorAll('tr.row').forEach((tr) => tr.addEventListener('click', () => { location.hash = `#/c/${encodeURIComponent(tr.dataset.id)}`; }));
-  body.querySelector('#export-csv')?.addEventListener('click', () => exportCSV(rows));
+  body.querySelector('#export-csv')?.addEventListener('click', () => {
+    if (escalationExport) exportEscalations(rows);
+    else exportCSV(rows);
+  });
   body.querySelector('#prev')?.addEventListener('click', () => { state.page--; renderListBody(); window.scrollTo(0, 0); });
   body.querySelector('#next')?.addEventListener('click', () => { state.page++; renderListBody(); window.scrollTo(0, 0); });
 }
@@ -607,6 +611,17 @@ function renderTranscriptDetail(id) {
 
 const truncate = (t, n) => { const s = String(t || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 
+function exportEscalations(conversations = null) {
+  const entries = conversations
+    ? conversations.map((c) => [c.id, state.escalations[c.id], c]).filter(([, e]) => e)
+    : Object.entries(state.escalations).map(([id, e]) => [id, e, state.convs.find((c) => c.id === id)]);
+  const rows = entries.map(([id, e, c]) => [
+    id, e.note, e.by, e.at, e.source,
+    c ? c.messages.map((m) => `${m.speaker.toLowerCase()}: ${m.text}`).join('\n') : '',
+  ]);
+  download(`apna-expert-escalations-${istToday()}.csv`, toCSV([['conversation_id', 'note', 'by', 'marked_at', 'source', 'transcript'], ...rows]));
+}
+
 function exportCSV(rows) {
   const head = ['conversation_id', 'date_ist', 'time_ist', 'conversation_seconds', 'employer_name', 'employer_number', 'apna_employer_id', 'company_name', 'entry_page', 'primary_intent',
     'employer_messages', 'bot_replies', 'handoff', 'outcome', 'explicitly_resolved', 'bot_score_pct', 'helpfulness_10',
@@ -776,8 +791,7 @@ function renderRules() {
       </div>
     </div>`;
   app.querySelector('#esc-export').addEventListener('click', () => {
-    const rows = Object.entries(state.escalations).map(([id, e]) => [id, e.note, e.by, e.at, e.source]);
-    download(`apna-expert-escalations-${istToday()}.csv`, toCSV([['conversation_id', 'note', 'by', 'marked_at', 'source'], ...rows]));
+    exportEscalations();
   });
   app.querySelector('#esc-import').addEventListener('click', () => document.getElementById('esc-input').click());
 }
