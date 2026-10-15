@@ -2,7 +2,7 @@
 
 A small web app for the support team to audit Apna Expert (support bot) chats from a MongoDB export of the `supportPostChat` collection, until the analytics tables are ready.
 
-- Drop the export file (JSON) and it shows the 8 audit queues from the *AI Chatbot Audit & Quality Assurance* proposal, the headline numbers, and every chat with its transcript and the evaluator's turn-by-turn notes.
+- Drop a MongoDB export (JSON/NDJSON) or a transcripts CSV downloaded from BlueMachines and it shows the 8 audit queues from the *AI Chatbot Audit & Quality Assurance* proposal, the headline numbers, and every chat with its transcript and the evaluator's turn-by-turn notes.
 - **Data never leaves the browser.** Files are read locally. Nothing is uploaded or stored on a server, so the Vercel deployment holds no chat data. Refreshing the tab clears the loaded chats.
 - No build step, no dependencies: plain HTML, CSS and JavaScript modules.
 
@@ -48,7 +48,7 @@ node test/check.mjs path/to/supportPostChat.json
   mongoexport --uri "<connection string>" --collection supportPostChat --jsonArray --out chats.json
   ```
 
-The app reads a JSON array, one document per line, or a single document, with Mongo extended JSON (`$oid`, `$date`). Several files can be added; chats are merged by conversation id (the evaluated record wins, then the newest).
+The app reads a JSON array, one document per line, or a single document, with Mongo extended JSON (`$oid`, `$date`). It also reads the transcripts CSV downloaded directly from BlueMachines, including its embedded evaluation JSON and multiline transcript. Several files can be added; chats are merged by conversation id (the evaluated record wins, then the newest). Other CSV files are treated as support-escalation lists.
 
 It understands both record shapes in the collection:
 1. **Raw post-chat records** (`payload.agentInteractionData.transcript`, `eval` / `payload.eval` with `turn_by_turn`), including older ones with no evaluation.

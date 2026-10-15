@@ -8,6 +8,7 @@
 //     transcript_json: [...], metadata: {...}, ... }
 
 import { BOT_LINES, TEST_CONVERSATION_PATTERNS, ANSWER_NO, ANSWER_YES } from './config.js';
+import { parseCSV } from './csv.js';
 
 const ANSWER = { yes: ANSWER_YES, no: ANSWER_NO };
 
@@ -52,6 +53,116 @@ export function parseExport(text) {
     });
     return docs;
   }
+}
+
+// ---------- BlueMachines CSV parsing ----------
+
+function jsonCell(value, fallback) {
+  if (value === null || value === undefined || String(value).trim() === '') return fallback;
+  try { return JSON.parse(value); } catch { return fallback; }
+}
+
+function numberCell(value) {
+  if (value === null || value === undefined || String(value).trim() === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+// The BlueMachines transcript also contains variables, tool payloads and debugger output.
+// Keep only the lines visibly spoken by the AI, employer or human support agent.
+function blueMachinesTranscript(raw) {
+  const marker = String(raw || '').match(/===\s*TRANSCRIPT\s*===/i);
+  const body = marker ? String(raw).slice(marker.index + marker[0].length) : String(raw || '');
+  const messages = [];
+  let current = null;
+  const flush = () => {
+    if (!current) return;
+    const text = current.lines.join('\n').trim();
+    if (text) messages.push(`${current.speaker}: ${text}`);
+    current = null;
+  };
+
+  for (const line of body.split(/\r?\n/)) {
+    const spoken = line.match(/^(AI agent|Assistant|Bot|User|Employer|Human agent|Support agent|Agent):\s*(.*)$/i);
+    if (spoken) {
+      flush();
+      const who = spoken[1].toLowerCase();
+      const speaker = /user|employer/.test(who) ? 'user' : /human|support/.test(who) || who === 'agent' ? 'agent' : 'assistant';
+      current = { speaker, lines: [spoken[2]] };
+      continue;
+    }
+    if (/^\s*debugger\s*:/.test(line) || /^\s*\[(?:Variables|Tool:)/i.test(line)) {
+      flush();
+      continue;
+    }
+    if (current) current.lines.push(line);
+  }
+  flush();
+  return messages.join('\n');
+}
+
+// Converts the CSV downloaded directly from BlueMachines into the raw record shape
+// already understood by normalize(). Throws when the file is some other kind of CSV.
+export function parseBlueMachinesExport(text) {
+  const rows = parseCSV(text);
+  if (!rows.length) return [];
+  const headers = rows[0].map((h) => h.trim().replace(/^\uFEFF/, ''));
+  const index = new Map(headers.map((h, i) => [h, i]));
+  if (!index.has('conversationId') || !index.has('transcript')) {
+    throw new Error('Not a BlueMachines conversation export');
+  }
+
+  return rows.slice(1).map((cells) => {
+    const get = (name) => cells[index.get(name)] ?? '';
+    const evaluated = get('callAnalysisStatus').toLowerCase() === 'ok' || !!get('evaluation.eval_version');
+    const identity = jsonCell(get('evaluation.identity'), {});
+    const evaluation = evaluated ? {
+      checks: jsonCell(get('evaluation.checks'), {}),
+      csat: jsonCell(get('evaluation.csat'), null),
+      employer_sentiment_end: get('evaluation.employer_sentiment_end') || null,
+      entry_page: get('evaluation.entry_page') || null,
+      eval_version: get('evaluation.eval_version') || null,
+      failure_tags: jsonCell(get('evaluation.failure_tags'), []),
+      fix_suggestion: get('evaluation.fix_suggestion') || null,
+      flag_for_review: jsonCell(get('evaluation.flag_for_review'), false),
+      helpfulness_10: numberCell(get('evaluation.helpfulness_10')),
+      human_handoff: jsonCell(get('evaluation.human_handoff'), {}),
+      identity,
+      languages: jsonCell(get('evaluation.languages'), []),
+      outcome: get('evaluation.outcome') || null,
+      primary_intent: get('evaluation.primary_intent') || null,
+      resolution_feedback: jsonCell(get('evaluation.resolution_feedback'), {}),
+      score: numberCell(get('evaluation.score')),
+      summary: get('evaluation.summary') || null,
+      system_issues: jsonCell(get('evaluation.system_issues'), []),
+      tools_visible: jsonCell(get('evaluation.tools_visible'), null),
+      turn_by_turn: jsonCell(get('evaluation.turn_by_turn'), []),
+      what_went_wrong: get('evaluation.what_went_wrong') || null,
+    } : null;
+
+    return {
+      _source: 'bluemachines_csv',
+      conversationId: get('conversationId'),
+      createdAt: get('interactionDate'),
+      transcript: blueMachinesTranscript(get('transcript')),
+      userId: identity.apna_employer_id || get('externalUserId') || null,
+      eval: evaluation,
+      payload: {
+        user_id: identity.apna_employer_id || get('externalUserId') || null,
+        session_id: identity.session_id || null,
+      },
+      blueMachines: {
+        userDisplayName: get('userDisplayName') || null,
+        agentName: get('agentName') || null,
+        durationSeconds: numberCell(get('durationSeconds')),
+        statusType: get('statusType') || null,
+        medium: get('medium') || null,
+        interactionEnvironment: get('interactionEnvironment') || null,
+        workflowId: get('workflowId') || null,
+        workflowExecutionId: get('workflowExecutionId') || null,
+      },
+    };
+  }).filter((record) => record.conversationId);
 }
 
 // ---------- helpers ----------

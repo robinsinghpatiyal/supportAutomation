@@ -1,13 +1,15 @@
 // Run: node test/check.mjs path/to/export.json
+//   or: node test/check.mjs path/to/bluemachines-export.csv
 // Prints how the app reads the export and how many chats land in each audit queue.
 import { readFileSync } from 'node:fs';
-import { parseExport, mergeConversations } from '../js/data.js';
+import { parseExport, parseBlueMachinesExport, mergeConversations } from '../js/data.js';
 import { runAudit } from '../js/audit.js';
 import { summarize, daily, topIntents, topTags } from '../js/metrics.js';
 import { CATEGORIES } from '../js/config.js';
 
 const file = process.argv[2];
-const docs = parseExport(readFileSync(file, 'utf8'));
+const text = readFileSync(file, 'utf8');
+const docs = /\.csv$/i.test(file) ? parseBlueMachinesExport(text) : parseExport(text);
 const { conversations, skipped } = mergeConversations([], docs);
 runAudit(conversations, {});
 const live = conversations.filter((c) => !c.isTest);

@@ -1,7 +1,7 @@
 // Apna Expert Audit: app shell, routing and screens.
 // All data stays in this browser tab: files are read locally and never uploaded.
 
-import { parseExport, mergeConversations } from './data.js';
+import { parseExport, parseBlueMachinesExport, mergeConversations } from './data.js';
 import { runAudit, explicitlyResolved, turnForUserMessage } from './audit.js';
 import { summarize, daily, topIntents, topTags } from './metrics.js';
 import { CATEGORIES, THRESHOLDS } from './config.js';
@@ -81,8 +81,21 @@ async function loadFiles(fileList) {
   for (const f of files) {
     const text = await f.text();
     if (/\.csv$/i.test(f.name)) {
-      const n = importEscalations(text, f.name);
-      messages.push(`${n} escalations from ${f.name}`);
+      try {
+        const docs = parseBlueMachinesExport(text);
+        const res = mergeConversations(state.convs, docs);
+        state.convs = res.conversations;
+        skipped += res.skipped;
+        state.files.push(f.name);
+        messages.push(`${docs.length} BlueMachines records from ${f.name}`);
+      } catch (e) {
+        if (e.message !== 'Not a BlueMachines conversation export') {
+          messages.push(`Could not read ${f.name}: ${e.message}`);
+          continue;
+        }
+        const n = importEscalations(text, f.name);
+        messages.push(`${n} escalations from ${f.name}`);
+      }
       continue;
     }
     try {
@@ -105,7 +118,7 @@ async function loadFiles(fileList) {
 }
 
 function loadText(text, name) {
-  const docs = parseExport(text);
+  const docs = /\.csv$/i.test(name) ? parseBlueMachinesExport(text) : parseExport(text);
   const res = mergeConversations(state.convs, docs);
   state.convs = res.conversations;
   state.files.push(name);
@@ -192,14 +205,15 @@ function renderUpload() {
   app.innerHTML = `
     <div class="dropzone" id="dropzone">
       <h1>Audit Apna Expert chats</h1>
-      <p>Drop the MongoDB export of <b>supportPostChat</b> here, or choose the file.</p>
-      <p class="muted small">JSON array or one document per line. You can add more files later; chats are merged by conversation id.</p>
+      <p>Drop a MongoDB <b>supportPostChat</b> export or a BlueMachines transcripts CSV here.</p>
+      <p class="muted small">JSON, NDJSON or BlueMachines CSV. You can add more files later; chats are merged by conversation id.</p>
       <button class="btn primary" id="pick">Choose export file</button>
       <div class="howto">
         <b>How to export from MongoDB</b>
         <ol>
           <li>Compass: open the <code>supportPostChat</code> collection, optionally filter by date, then <i>Export Data → Export the full collection → JSON</i>.</li>
           <li>Or the command line: <code>mongoexport --uri "&lt;uri&gt;" --collection supportPostChat --jsonArray --out chats.json</code></li>
+          <li>Or download the transcripts CSV directly from BlueMachines and drop it here.</li>
         </ol>
         <b>Support escalations</b>
         <p>To bring in chats your team escalated, drop a CSV with a <code>conversation_id</code> column (optional <code>note</code> and <code>by</code> columns). You can also mark chats inside the app.</p>
