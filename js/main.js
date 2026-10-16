@@ -6,7 +6,7 @@ import { runAudit, explicitlyResolved, turnForUserMessage } from './audit.js';
 import { summarize, daily, topIntents, topTags } from './metrics.js';
 import { CATEGORIES, THRESHOLDS } from './config.js';
 import { dailyChart } from './chart.js';
-import { esc, fmtPct, fmtNum, label, fmtDate, toast, download, toCSV, parseCSV } from './ui.js';
+import { esc, fmtPct, label, fmtDate, toast, download, toCSV, parseCSV } from './ui.js';
 
 const ESC_KEY = 'apnaExpertAudit.escalations.v2';
 const LEGACY_ESC_KEY = 'apnaExpertAudit.escalations.v1';
@@ -321,7 +321,6 @@ function renderOverviewBody() {
     ['Human support chats', s.humanHandoffs, `${s.humanHandoffResolved} resolved · ${s.humanHandoffActive} active · ${s.humanHandoffClosedByUser} closed by user · ${s.humanHandoffTimedOut} timed out`],
     ['Employer said resolved', fmtPct(s.resolveYesPct), s.resolveAsked ? `of ${s.resolveAsked} asked "Did this resolve your query?"` : 'No one was asked yet'],
     ['Avg bot score', s.avgBotScorePct === null ? '–' : `${Math.round(s.avgBotScorePct)}%`, `evaluator turn scores, ${s.evaluated} evaluated chats`],
-    ['Avg helpfulness', s.avgHelpfulness === null ? '–' : `${fmtNum(s.avgHelpfulness, 1)}/10`, 'evaluator rating'],
     ['CSAT yes', s.csatGiven ? fmtPct(s.csatYesPct) : '–', s.csatGiven ? `of ${s.csatGiven} answers` : 'No CSAT answers in the data yet'],
     ['In an audit queue', s.flagged, `${fmtPct(s.chats ? (100 * s.flagged) / s.chats : null)} of chats`],
   ];
