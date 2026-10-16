@@ -49,7 +49,7 @@ node test/check.mjs path/to/supportPostChat.json
   mongoexport --uri "<connection string>" --collection supportPostChat --jsonArray --out chats.json
   ```
 
-The app reads a JSON array, one document per line, or a single document, with Mongo extended JSON (`$oid`, `$date`). It also reads the transcripts CSV downloaded directly from BlueMachines, including its embedded evaluation JSON and multiline transcript. Several files can be added; chats are merged by conversation id (the evaluated record wins, then the newest). Other CSV files are treated as support-escalation lists.
+The app reads a JSON array, one document per line, or a single document, with Mongo extended JSON (`$oid`, `$date`). It also reads the transcripts CSV downloaded directly from BlueMachines, including its embedded evaluation JSON, bot transcript, human-support transcript and handoff status. Several files can be added; chats are merged by conversation id (the evaluated record wins, then the newest). Other CSV files are treated as support-escalation lists.
 
 It understands both record shapes in the collection:
 1. **Raw post-chat records** (`payload.agentInteractionData.transcript`, `eval` / `payload.eval` with `turn_by_turn`), including older ones with no evaluation.
@@ -79,6 +79,7 @@ All thresholds, keyword lists and fixed bot lines are in **`js/config.js`**.
 | Engaged chats | Chats where the employer sent at least one message |
 | Avg conversation time | Average BlueMachines interaction duration where `durationSeconds` is available |
 | Contained by the bot | Engaged chats with no handoff (no `agent_handoff`, connect line, support-hours line or agent message) |
+| Human support chats | Chats with a populated human handoff or support-agent message, split into resolved, active, closed-by-user and timed-out |
 | Employer said resolved | Of chats where the employer answered the resolve question yes or no, the share whose last answer was yes |
 | Avg bot score | 100 × sum of turn scores ÷ (5 × turns), averaged over evaluated chats |
 | Avg helpfulness | Evaluator's 0–10 rating, averaged |

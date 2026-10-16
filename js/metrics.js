@@ -10,6 +10,7 @@ export function summarize(convs) {
   const engaged = convs.filter((c) => c.engaged);
   const evaluated = engaged.filter((c) => c.hasEval);
   const handedOff = engaged.filter((c) => c.handoff);
+  const humanHandoffs = convs.filter((c) => c.humanHandoff || c.agentMessages > 0);
   const asked = engaged.filter((c) => c.resolveAnswers.some((a) => a.answer === 'yes' || a.answer === 'no'));
   const said = (ans) => asked.filter((c) => {
     const answers = c.resolveAnswers.filter((a) => a.answer === 'yes' || a.answer === 'no');
@@ -34,6 +35,11 @@ export function summarize(convs) {
     handedOff: handedOff.length,
     supportClosed: handedOff.filter((c) => c.handoffStatus === 'support_closed').length,
     saidOnly: engaged.filter((c) => c.handoffStatus === 'said_only').length,
+    humanHandoffs: humanHandoffs.length,
+    humanHandoffResolved: humanHandoffs.filter((c) => c.handoffPhase === 'RESOLVED').length,
+    humanHandoffActive: humanHandoffs.filter((c) => c.handoffPhase === 'HUMAN_ACTIVE').length,
+    humanHandoffClosedByUser: humanHandoffs.filter((c) => c.handoffPhase === 'CLOSED_BY_USER').length,
+    humanHandoffTimedOut: humanHandoffs.filter((c) => c.handoffPhase === 'TIMED_OUT').length,
     resolveAsked: asked.length,
     resolveYesPct: pct(said('yes'), asked.length),
     explicitResolvedPct: pct(engaged.filter(explicitlyResolved).length, engaged.length),

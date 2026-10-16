@@ -318,6 +318,7 @@ function renderOverviewBody() {
     ['Engaged chats', s.engaged, `of ${s.chats} chats; ${s.chats - s.engaged} closed without a message`],
     ['Avg conversation time', fmtDuration(s.avgConversationSeconds), 'Average duration in the loaded export'],
     ['Contained by the bot', fmtPct(s.containmentPct), `${s.handedOff} handed off (${s.supportClosed} while support was closed)${s.saidOnly ? `; ${s.saidOnly} told "connecting" with no handoff` : ''}`],
+    ['Human support chats', s.humanHandoffs, `${s.humanHandoffResolved} resolved · ${s.humanHandoffActive} active · ${s.humanHandoffClosedByUser} closed by user · ${s.humanHandoffTimedOut} timed out`],
     ['Employer said resolved', fmtPct(s.resolveYesPct), s.resolveAsked ? `of ${s.resolveAsked} asked "Did this resolve your query?"` : 'No one was asked yet'],
     ['Avg bot score', s.avgBotScorePct === null ? '–' : `${Math.round(s.avgBotScorePct)}%`, `evaluator turn scores, ${s.evaluated} evaluated chats`],
     ['Avg helpfulness', s.avgHelpfulness === null ? '–' : `${fmtNum(s.avgHelpfulness, 1)}/10`, 'evaluator rating'],
@@ -467,6 +468,12 @@ function renderListBody() {
   body.querySelector('#next')?.addEventListener('click', () => { state.page++; renderListBody(); window.scrollTo(0, 0); });
 }
 
+function compactTranscript(c) {
+  const bot = c.messages.map((m) => `${m.speaker.toLowerCase()}: ${m.text}`);
+  const human = (c.humanMessages || []).map((m) => `${m.speaker.toLowerCase()}: ${m.text}`);
+  return [...bot, ...(human.length ? ['', '--- human support ---', ...human] : [])].join('\n');
+}
+
 function transcriptText(c) {
   const speaker = { Bot: 'Apna Expert', User: 'Employer', Agent: 'Support agent' };
   const handoff = c.handoff ? label(c.handoffStatus) : c.handoffStatus === 'said_only' ? 'said only (no handoff)' : 'no';
@@ -482,9 +489,10 @@ function transcriptText(c) {
     `CSAT: ${c.csat || 'not given'}`,
     `Human handoff: ${handoff}`,
   ];
-  const messages = c.messages.length
-    ? c.messages.map((m) => `${speaker[m.speaker] || m.speaker}: ${m.text}`)
-    : ['(No spoken transcript available.)'];
+  const messages = c.messages.map((m) => `${speaker[m.speaker] || m.speaker}: ${m.text}`);
+  const humanMessages = (c.humanMessages || []).map((m) => `${m.name || speaker[m.speaker] || m.speaker}: ${m.text}`);
+  if (humanMessages.length) messages.push('', '--- HUMAN SUPPORT CONVERSATION ---', ...humanMessages);
+  if (!messages.length) messages.push('(No spoken transcript available.)');
   return [...header, '', ...messages].join('\n');
 }
 
@@ -619,6 +627,8 @@ function renderTranscriptDetail(id) {
             <span>Bot score <b>${c.botScorePct === null ? '–' : `${Math.round(c.botScorePct)}%`}</b></span>
             <span>CSAT <b>${esc(c.csat || 'Not given')}</b></span>
             <span>Human handoff ${handoffChip(c)}</span>
+            ${c.handoffAgentName ? `<span>Support agent <b>${esc(c.handoffAgentName)}</b></span>` : ''}
+            ${c.handoffPhase ? `<span>Support status <b>${esc(label(c.handoffPhase))}</b></span>` : ''}
           </div>
         </div>
       </div>
@@ -641,7 +651,7 @@ function exportEscalations(conversations = null) {
     : Object.entries(state.escalations).map(([id, e]) => [id, e, state.convs.find((c) => c.id === id)]);
   const rows = entries.map(([id, e, c]) => [
     id, e.note, e.by, e.at, e.source,
-    c ? c.messages.map((m) => `${m.speaker.toLowerCase()}: ${m.text}`).join('\n') : '',
+    c ? compactTranscript(c) : '',
   ]);
   download(`apna-expert-escalations-${istToday()}.csv`, toCSV([['conversation_id', 'note', 'by', 'marked_at', 'source', 'transcript'], ...rows]));
 }
@@ -656,7 +666,7 @@ function exportCSV(rows) {
     c.csat, c.categories.map((k) => CATEGORIES.find((x) => x.key === k).name).join('; '), c.alerts.join('; '),
     c.categories.map((k) => `${SHORT[k]}: ${c.audit[k].reasons.join(' ')}`).join(' | '),
     state.escalations[c.id]?.note || '', c.summary,
-    c.messages.map((m) => `${m.speaker}: ${m.text}`).join('\n'),
+    compactTranscript(c),
   ]);
   const cat = state.filters.cat ? `-${state.filters.cat}` : '';
   download(`apna-expert-audit${cat}-${istToday()}.csv`, toCSV([head, ...data]));
@@ -692,6 +702,8 @@ function renderDetail(id) {
             <span>Bot score <b>${c.botScorePct === null ? '–' : Math.round(c.botScorePct) + '%'}</b></span>
             <span>Helpfulness <b>${c.helpfulness10 === null ? '–' : c.helpfulness10 + '/10'}</b></span>
             <span>Handoff ${handoffChip(c)}</span>
+            ${c.handoffAgentName ? `<span>Support agent <b>${esc(c.handoffAgentName)}</b></span>` : ''}
+            ${c.handoffPhase ? `<span>Support status <b>${esc(label(c.handoffPhase))}</b></span>` : ''}
             ${c.languages.length ? `<span>Language <b>${esc(c.languages.join(', '))}</b></span>` : ''}
             <span class="muted">${c.hasEval ? `Evaluator ${esc(c.evalVersion || '')}` : 'Not evaluated'}</span>
           </div>
@@ -765,7 +777,7 @@ function turnNote(t) {
 }
 
 function transcriptHTML(c) {
-  if (!c.messages.length) return '<p class="muted">No transcript.</p>';
+  if (!c.messages.length && !c.humanMessages?.length) return '<p class="muted">No transcript.</p>';
   let html = '';
   let pending = null;
   const used = new Set();
@@ -780,6 +792,13 @@ function transcriptHTML(c) {
     html += `<div class="msg ${esc(m.speaker)}"><div class="who">${who}</div>${esc(m.text)}</div>`;
   });
   if (pending) html += turnNote(pending);
+  if (c.humanMessages?.length) {
+    html += `<div class="transcript-divider"><b>Human support conversation</b>${c.handoffAgentName ? ` · ${esc(c.handoffAgentName)}` : ''}${c.handoffPhase ? ` · ${esc(label(c.handoffPhase))}` : ''}</div>`;
+    c.humanMessages.forEach((m) => {
+      const who = m.speaker === 'Agent' ? (m.name || 'Support agent') : 'Employer';
+      html += `<div class="msg ${esc(m.speaker)}"><div class="who">${esc(who)}</div>${esc(m.text)}</div>`;
+    });
+  }
   return html;
 }
 
@@ -802,6 +821,7 @@ function renderRules() {
         <dt>Engaged chats</dt><dd>Chats where the employer sent at least one message.</dd>
         <dt>Avg conversation time</dt><dd>Average BlueMachines interaction duration for chats where a duration is available.</dd>
         <dt>Contained by the bot</dt><dd>Engaged chats with no handoff (no agent_handoff call, connect line, support-hours line or agent message).</dd>
+        <dt>Human support chats</dt><dd>Chats with a populated BlueMachines human handoff or a recorded support-agent message, split by final handoff status.</dd>
         <dt>Employer said resolved</dt><dd>Of chats where the bot asked "Did this resolve your query?" and the employer answered yes or no, the share whose last answer was yes.</dd>
         <dt>Avg bot score</dt><dd>100 × sum of the evaluator's turn scores ÷ (5 × number of turns), averaged over evaluated chats.</dd>
         <dt>Avg helpfulness</dt><dd>The evaluator's 0 to 10 helpfulness rating, averaged.</dd>

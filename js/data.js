@@ -101,6 +101,60 @@ function blueMachinesTranscript(raw) {
   return messages.join('\n');
 }
 
+// "[time] Name (Agent): text {delivery=...}" / "[time] Customer: text {delivery=...}"
+// -> spoken support messages. Handoff lifecycle event lines are intentionally omitted.
+function blueMachinesHumanTranscript(raw) {
+  const messages = [];
+  let current = null;
+  const flush = () => {
+    if (!current) return;
+    const text = current.lines.join('\n')
+      .replace(/\s+\{delivery=[^}]*\}\s*$/i, '')
+      .trim();
+    if (text) messages.push({ speaker: current.speaker, name: current.name, text, at: current.at });
+    current = null;
+  };
+
+  for (const line of String(raw || '').split(/\r?\n/)) {
+    const match = line.match(/^\[([^\]]+)\]\s+(.+?):\s*(.*)$/);
+    if (match) {
+      flush();
+      const [, at, actor, rawText] = match;
+      const isAgent = /\(agent\)\s*$/i.test(actor);
+      const isUser = /^(customer|user|employer)$/i.test(actor.trim());
+      if (!isAgent && !isUser) continue;
+      current = {
+        speaker: isAgent ? 'Agent' : 'User',
+        name: isAgent ? actor.replace(/\s*\(agent\)\s*$/i, '').trim() : 'Customer',
+        lines: [rawText],
+        at,
+      };
+    } else if (current) {
+      current.lines.push(line.trim());
+    }
+  }
+  flush();
+  return messages;
+}
+
+// Human handoff feedback is recorded after a feedback_prompt event, but older
+// evaluator payloads can still say CSAT was not given. Prefer the explicit response.
+function blueMachinesHumanCsat(raw) {
+  const match = String(raw || '').match(/agent_handoff\.feedback_prompt[\s\S]*?\[[^\]]+\]\s+(?:Customer|User|Employer):\s*([^\n]+)/i);
+  if (!match) return null;
+  const answer = match[1].replace(/\s+\{delivery=[^}]*\}\s*$/i, '').trim();
+  if (ANSWER_YES.test(answer)) return 'yes';
+  if (ANSWER_NO.test(answer)) return 'no';
+  return null;
+}
+
+function booleanCell(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['yes', 'true', '1'].includes(normalized)) return true;
+  if (['no', 'false', '0'].includes(normalized)) return false;
+  return null;
+}
+
 // Converts the CSV downloaded directly from BlueMachines into the raw record shape
 // already understood by normalize(). Throws when the file is some other kind of CSV.
 export function parseBlueMachinesExport(text) {
@@ -114,6 +168,7 @@ export function parseBlueMachinesExport(text) {
 
   return rows.slice(1).map((cells) => {
     const get = (name) => cells[index.get(name)] ?? '';
+    const humanTranscript = get('humanTranscript');
     const evaluated = get('callAnalysisStatus').toLowerCase() === 'ok' || !!get('evaluation.eval_version');
     const identity = jsonCell(get('evaluation.identity'), {});
     const evaluation = evaluated ? {
@@ -145,6 +200,7 @@ export function parseBlueMachinesExport(text) {
       conversationId: get('conversationId'),
       createdAt: get('interactionDate'),
       transcript: blueMachinesTranscript(get('transcript')),
+      humanTranscript: blueMachinesHumanTranscript(humanTranscript),
       userId: identity.apna_employer_id || get('externalUserId') || null,
       eval: evaluation,
       payload: {
@@ -159,6 +215,14 @@ export function parseBlueMachinesExport(text) {
         statusType: get('statusType') || null,
         medium: get('medium') || null,
         interactionEnvironment: get('interactionEnvironment') || null,
+        hasHumanHandoff: booleanCell(get('hasHumanHandoff')),
+        handoffAgentName: get('handoffAgentName') || null,
+        handoffPhase: get('handoffPhase') || null,
+        handoffMessageCount: numberCell(get('handoffMessageCount')),
+        handoffRequestedAt: get('handoffRequestedAt') || null,
+        handoffHumanActiveAt: get('handoffHumanActiveAt') || null,
+        handoffResolvedAt: get('handoffResolvedAt') || null,
+        csat: blueMachinesHumanCsat(humanTranscript),
         workflowId: get('workflowId') || null,
         workflowExecutionId: get('workflowExecutionId') || null,
       },
@@ -254,6 +318,7 @@ function toolsFromString(s) {
 
 function fromRaw(rec) {
   const payload = rec.payload || {};
+  const bm = rec.blueMachines || {};
   const ev = (rec.eval && typeof rec.eval === 'object') ? rec.eval : (payload.eval && typeof payload.eval === 'object' ? payload.eval : null);
   const hasEval = !!(ev && Array.isArray(ev.turn_by_turn));
   const ident = (ev && ev.identity) || {};
@@ -286,6 +351,14 @@ function fromRaw(rec) {
     sessionId: str(payload.session_id) || str(ident.session_id),
     entryPage: str(ev && ev.entry_page),
     messages: parseTranscript(transcriptText),
+    humanMessages: Array.isArray(rec.humanTranscript) ? rec.humanTranscript : [],
+    humanHandoff: bm.hasHumanHandoff === true,
+    handoffAgentName: str(bm.handoffAgentName),
+    handoffPhase: str(bm.handoffPhase),
+    handoffMessageCount: num(bm.handoffMessageCount),
+    handoffRequestedAt: asDate(bm.handoffRequestedAt),
+    handoffHumanActiveAt: asDate(bm.handoffHumanActiveAt),
+    handoffResolvedAt: asDate(bm.handoffResolvedAt),
     hasEval,
     evalVersion: str(ev && ev.eval_version),
     score5: hasEval ? num(ev.score) : null,
@@ -301,7 +374,7 @@ function fromRaw(rec) {
     handoffReason: str(hh.reason),
     agentJoined: yesNo(hh.agent_joined),
     resolvedByEmployer: str(rf.last_response),
-    csat: csatFrom(ev && ev.csat, null),
+    csat: csatFrom(ev && ev.csat, bm.csat),
     summary: str(ev && ev.summary),
     whatWentWrong: str(ev && ev.what_went_wrong),
     fixSuggestion: str(ev && ev.fix_suggestion),
@@ -355,6 +428,14 @@ function fromFlat(rec) {
     sessionId: str(rec.session_id) || str(ident.session_id),
     entryPage: str(rec.entry_page),
     messages,
+    humanMessages: [],
+    humanHandoff: !!(rec.human_transcript_json && rec.human_transcript_json.length),
+    handoffAgentName: str(rec.handoff_agent_name),
+    handoffPhase: str(rec.handoff_phase),
+    handoffMessageCount: num(rec.handoff_message_count),
+    handoffRequestedAt: asDate(rec.handoff_requested_at),
+    handoffHumanActiveAt: asDate(rec.handoff_human_active_at),
+    handoffResolvedAt: asDate(rec.handoff_resolved_at),
     hasEval,
     evalVersion: str(rec.eval_version),
     score5: num(rec.overall_score_5),
@@ -386,12 +467,14 @@ function fromFlat(rec) {
 // Derived facts used by the audit rules and the screens
 function enrich(c) {
   const msgs = c.messages;
+  const humanMsgs = Array.isArray(c.humanMessages) ? c.humanMessages : [];
   const { date, time } = toIST(c.createdAt);
   c.dateIST = date;
   c.timeIST = time;
   c.userMessages = msgs.filter((m) => m.speaker === 'User').length;
   c.botMessages = msgs.filter((m) => m.speaker === 'Bot').length;
-  c.agentMessages = msgs.filter((m) => m.speaker === 'Agent').length;
+  c.agentMessages = msgs.filter((m) => m.speaker === 'Agent').length
+    + humanMsgs.filter((m) => m.speaker === 'Agent').length;
   // bot replies after the employer's first message (the welcome line is not a reply)
   const firstUser = msgs.findIndex((m) => m.speaker === 'User');
   c.botReplies = firstUser < 0 ? 0 : msgs.slice(firstUser).filter((m) => m.speaker === 'Bot').length;
@@ -420,8 +503,8 @@ function enrich(c) {
   // a connect line with no call is shown as "said only". Without it, the transcript lines are all we have.
   const hasToolData = c.turns.length > 0;
   c.handoff = hasToolData
-    ? !!(c.evalHandoff || toolHandoff || c.agentMessages > 0)
-    : !!(c.evalHandoff || c.agentMessages > 0 || lineHandoff);
+    ? !!(c.evalHandoff || toolHandoff || c.humanHandoff || c.agentMessages > 0)
+    : !!(c.evalHandoff || c.humanHandoff || c.agentMessages > 0 || lineHandoff);
   if (c.agentMessages > 0 || c.agentJoined) c.handoffStatus = 'agent_joined';
   else if (c.handoff && (c.outcome === 'handoff_closed_hours' || closedLine)) c.handoffStatus = 'support_closed';
   else if (c.handoff) c.handoffStatus = 'requested';
@@ -435,7 +518,7 @@ function enrich(c) {
   c.isTest = TEST_CONVERSATION_PATTERNS.some((re) => re.test(c.id || ''))
     || TEST_USER_IDS.has(c.apnaEmployerId || '');
   c.searchText = [c.id, c.apnaEmployerId, c.employerId, c.userName, c.phoneNumber, c.companyName, c.sessionId, c.primaryIntent,
-    ...msgs.map((m) => m.text)].filter(Boolean).join(' ').toLowerCase();
+    ...msgs.map((m) => m.text), ...humanMsgs.map((m) => m.text)].filter(Boolean).join(' ').toLowerCase();
   return c;
 }
 
