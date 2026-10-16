@@ -650,10 +650,13 @@ function exportEscalations(conversations = null) {
     ? conversations.map((c) => [c.id, state.escalations[c.id], c]).filter(([, e]) => e)
     : Object.entries(state.escalations).map(([id, e]) => [id, e, state.convs.find((c) => c.id === id)]);
   const rows = entries.map(([id, e, c]) => [
-    id, e.note, e.by, e.at, e.source,
+    id, c ? transcriptUserId(c) : '', c?.phoneNumber || '', e.note, e.by, e.at, e.source,
     c ? compactTranscript(c) : '',
   ]);
-  download(`apna-expert-escalations-${istToday()}.csv`, toCSV([['conversation_id', 'note', 'by', 'marked_at', 'source', 'transcript'], ...rows]));
+  download(`apna-expert-escalations-${istToday()}.csv`, toCSV([
+    ['conversation_id', 'user_id', 'employer_number', 'note', 'by', 'marked_at', 'source', 'transcript'],
+    ...rows,
+  ]));
 }
 
 function exportCSV(rows) {
