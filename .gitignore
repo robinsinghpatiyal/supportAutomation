@@ -3,6 +3,7 @@
 !vercel.json
 *.ndjson
 *.csv
+transcript-*.txt
 .local-*
 .debug-*
 .vercel
