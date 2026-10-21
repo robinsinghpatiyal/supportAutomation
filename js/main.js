@@ -467,9 +467,19 @@ function renderListBody() {
   body.querySelector('#next')?.addEventListener('click', () => { state.page++; renderListBody(); window.scrollTo(0, 0); });
 }
 
+function fmtMessageTimestamp(value) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return '';
+  const ist = new Date(date.getTime() + 5.5 * 3600000).toISOString();
+  return `${ist.slice(0, 10)} ${ist.slice(11, 19)} IST`;
+}
+
 function compactTranscript(c) {
   const bot = c.messages.map((m) => `${m.speaker.toLowerCase()}: ${m.text}`);
-  const human = (c.humanMessages || []).map((m) => `${m.speaker.toLowerCase()}: ${m.text}`);
+  const human = (c.humanMessages || []).map((m) => {
+    const timestamp = fmtMessageTimestamp(m.at);
+    return `${timestamp ? `[${timestamp}] ` : ''}${m.speaker.toLowerCase()}: ${m.text}`;
+  });
   return [...bot, ...(human.length ? ['', '--- human support ---', ...human] : [])].join('\n');
 }
 
@@ -489,7 +499,10 @@ function transcriptText(c) {
     `Human handoff: ${handoff}`,
   ];
   const messages = c.messages.map((m) => `${speaker[m.speaker] || m.speaker}: ${m.text}`);
-  const humanMessages = (c.humanMessages || []).map((m) => `${m.name || speaker[m.speaker] || m.speaker}: ${m.text}`);
+  const humanMessages = (c.humanMessages || []).map((m) => {
+    const timestamp = fmtMessageTimestamp(m.at);
+    return `${timestamp ? `[${timestamp}] ` : ''}${m.name || speaker[m.speaker] || m.speaker}: ${m.text}`;
+  });
   if (humanMessages.length) messages.push('', '--- HUMAN SUPPORT CONVERSATION ---', ...humanMessages);
   if (!messages.length) messages.push('(No spoken transcript available.)');
   return [...header, '', ...messages].join('\n');
@@ -798,7 +811,8 @@ function transcriptHTML(c) {
     html += `<div class="transcript-divider"><b>Human support conversation</b>${c.handoffAgentName ? ` · ${esc(c.handoffAgentName)}` : ''}${c.handoffPhase ? ` · ${esc(label(c.handoffPhase))}` : ''}</div>`;
     c.humanMessages.forEach((m) => {
       const who = m.speaker === 'Agent' ? (m.name || 'Support agent') : 'Employer';
-      html += `<div class="msg ${esc(m.speaker)}"><div class="who">${esc(who)}</div>${esc(m.text)}</div>`;
+      const timestamp = fmtMessageTimestamp(m.at);
+      html += `<div class="msg ${esc(m.speaker)}"><div class="who">${esc(who)}${timestamp ? ` · ${esc(timestamp)}` : ''}</div>${esc(m.text)}</div>`;
     });
   }
   return html;
