@@ -7,7 +7,7 @@
 //  2. Flattened rows (from 14 Oct 2026): { conversation_id, chat_date_ist, agent_handoff, turns: [...],
 //     transcript_json: [...], metadata: {...}, ... }
 
-import { BOT_LINES, TEST_CONVERSATION_PATTERNS, TEST_USER_IDS, ANSWER_NO, ANSWER_YES } from './config.js';
+import { BOT_LINES, TEST_CONVERSATION_PATTERNS, TEST_USER_IDS, ANSWER_NO, ANSWER_YES, SUPPORT_HOURS_IST } from './config.js';
 import { parseCSV } from './csv.js';
 
 const ANSWER = { yes: ANSWER_YES, no: ANSWER_NO };
@@ -68,11 +68,94 @@ function numberCell(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function blueMachinesBody(raw) {
+  const text = String(raw || '');
+  const marker = text.match(/===\s*TRANSCRIPT\s*===/i);
+  return marker ? text.slice(marker.index + marker[0].length) : text;
+}
+
+// Returns a complete JSON object beginning at or after start, respecting braces in strings.
+function jsonObjectAfter(text, start) {
+  const begin = text.indexOf('{', start);
+  if (begin < 0) return null;
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let i = begin; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') quoted = false;
+      continue;
+    }
+    if (ch === '"') quoted = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}' && --depth === 0) return { text: text.slice(begin, i + 1), end: i + 1 };
+  }
+  return null;
+}
+
+function blueMachinesVariables(raw) {
+  const body = blueMachinesBody(raw);
+  const marker = body.search(/^\[Variables\]\s*$/m);
+  if (marker < 0) return {};
+  const object = jsonObjectAfter(body, marker);
+  if (object) {
+    try {
+      const wrapper = JSON.parse(object.text);
+      const input = wrapper?.details?.['Input Variables'];
+      if (typeof input === 'string') return JSON.parse(input);
+      if (input && typeof input === 'object') return input;
+    } catch { /* fall through to field regexes */ }
+  }
+  const field = (name) => {
+    const match = body.slice(marker, object?.end || marker + 5000)
+      .match(new RegExp(`\\\\?"${name}\\\\?"\\s*:\\s*\\\\?"([^"\\\\}]*)`, 'i'));
+    return match ? match[1].replace(/\\"/g, '"') : null;
+  };
+  return {
+    apnaEmployerId: field('apnaEmployerId'),
+    userId: field('userId'),
+    employerId: field('employerId'),
+    companyName: field('companyName'),
+    apnaSupportPage: field('apnaSupportPage'),
+  };
+}
+
+function blueMachinesToolCalls(raw) {
+  const body = blueMachinesBody(raw);
+  const userPositions = [...body.matchAll(/^User:\s/gmi)].map((m) => m.index);
+  const calls = [];
+  for (const marker of body.matchAll(/^\[Tool:\s*([^\]]+)\]\s*$/gmi)) {
+    const fallbackName = marker[1].trim();
+    const object = jsonObjectAfter(body, marker.index + marker[0].length);
+    const segmentEnd = object?.end || body.slice(marker.index + marker[0].length).search(/\n(?:AI agent|User|\[Tool:|\[External Data\])/i);
+    const segment = object?.text || body.slice(marker.index, segmentEnd > 0 ? marker.index + segmentEnd : undefined);
+    let parsed = null;
+    try { parsed = object ? JSON.parse(object.text) : null; } catch { /* regex fallback below */ }
+    const details = parsed?.details || {};
+    const metricText = Array.isArray(parsed?.metrics) ? parsed.metrics.join(' ') : segment;
+    const latency = metricText.match(/Latency:\s*([\d.]+)\s*ms/i);
+    const fallback = (label) => {
+      const match = segment.match(new RegExp(`"${label}"\\s*:\\s*"((?:\\\\.|[^"])*)"`, 'i'));
+      return match ? match[1].replace(/\\"/g, '"').replace(/\\\\n/g, '\n') : null;
+    };
+    calls.push({
+      tool: details['Tool name'] || fallback('Tool name') || fallbackName,
+      input: details['Tool input'] ?? fallback('Tool input'),
+      output: details.Output ?? fallback('Output'),
+      latencyMs: latency ? Number(latency[1]) : null,
+      userMessageNo: userPositions.filter((position) => position < marker.index).length,
+    });
+  }
+  return calls;
+}
+
 // The BlueMachines transcript also contains variables, tool payloads and debugger output.
 // Keep only the lines visibly spoken by the AI, employer or human support agent.
 function blueMachinesTranscript(raw) {
-  const marker = String(raw || '').match(/===\s*TRANSCRIPT\s*===/i);
-  const body = marker ? String(raw).slice(marker.index + marker[0].length) : String(raw || '');
+  const body = blueMachinesBody(raw);
   const messages = [];
   let current = null;
   const flush = () => {
@@ -137,6 +220,15 @@ function blueMachinesHumanTranscript(raw) {
   return messages;
 }
 
+function blueMachinesHandoffEvents(raw) {
+  const events = [];
+  for (const match of String(raw || '').matchAll(/agent_handoff\.([a-z_]+)/gi)) {
+    const event = match[1].toLowerCase();
+    if (!events.includes(event)) events.push(event);
+  }
+  return events;
+}
+
 // Human handoff feedback is recorded after a feedback_prompt event, but older
 // evaluator payloads can still say CSAT was not given. Prefer the explicit response.
 function blueMachinesHumanCsat(raw) {
@@ -169,6 +261,9 @@ export function parseBlueMachinesExport(text) {
   return rows.slice(1).map((cells) => {
     const get = (name) => cells[index.get(name)] ?? '';
     const humanTranscript = get('humanTranscript');
+    const rawTranscript = get('transcript');
+    const variables = blueMachinesVariables(rawTranscript);
+    const variableEmployerId = variables.apnaEmployerId || variables.userId || null;
     const evaluated = get('callAnalysisStatus').toLowerCase() === 'ok' || !!get('evaluation.eval_version');
     const identity = jsonCell(get('evaluation.identity'), {});
     const evaluation = evaluated ? {
@@ -199,17 +294,21 @@ export function parseBlueMachinesExport(text) {
       _source: 'bluemachines_csv',
       conversationId: get('conversationId'),
       createdAt: get('interactionDate'),
-      transcript: blueMachinesTranscript(get('transcript')),
+      transcript: blueMachinesTranscript(rawTranscript),
       humanTranscript: blueMachinesHumanTranscript(humanTranscript),
-      userId: identity.apna_employer_id || get('externalUserId') || null,
+      handoffEvents: blueMachinesHandoffEvents(humanTranscript),
+      toolCalls: blueMachinesToolCalls(rawTranscript),
+      variables,
+      userId: identity.apna_employer_id || variableEmployerId,
       eval: evaluation,
       payload: {
-        user_id: identity.apna_employer_id || get('externalUserId') || null,
+        user_id: identity.apna_employer_id || variableEmployerId,
         session_id: identity.session_id || null,
       },
       blueMachines: {
         userDisplayName: get('userDisplayName') || null,
-        userPhoneNumber: get('userPhoneNumber') || null,
+        userPhoneNumber: get('userPhoneNumber') || get('externalUserId') || null,
+        externalUserId: get('externalUserId') || null,
         agentName: get('agentName') || null,
         durationSeconds: numberCell(get('durationSeconds')),
         statusType: get('statusType') || null,
@@ -237,6 +336,10 @@ export function toIST(date) {
   if (!(date instanceof Date) || isNaN(date)) return { date: '', time: '' };
   const d = new Date(date.getTime() + IST_OFFSET_MS).toISOString();
   return { date: d.slice(0, 10), time: d.slice(11, 16) };
+}
+
+export function isSupportHoursIST(time) {
+  return typeof time === 'string' && time >= SUPPORT_HOURS_IST.start && time < SUPPORT_HOURS_IST.end;
 }
 
 function asDate(v) {
@@ -319,6 +422,7 @@ function toolsFromString(s) {
 function fromRaw(rec) {
   const payload = rec.payload || {};
   const bm = rec.blueMachines || {};
+  const variables = rec.variables || {};
   const ev = (rec.eval && typeof rec.eval === 'object') ? rec.eval : (payload.eval && typeof payload.eval === 'object' ? payload.eval : null);
   const hasEval = !!(ev && Array.isArray(ev.turn_by_turn));
   const ident = (ev && ev.identity) || {};
@@ -341,17 +445,20 @@ function fromRaw(rec) {
     mongoId: str(rec._id),
     createdAt: asDate(rec.createdAt) || asDate(rec.updatedAt),
     durationSeconds: num(rec.durationSeconds) ?? num(rec.blueMachines && rec.blueMachines.durationSeconds),
-    apnaEmployerId: str(payload.user_id) || str(rec.userId) || str(ident.apna_employer_id),
-    employerId: str(ident.employer_id),
+    apnaEmployerId: str(payload.user_id) || str(rec.userId) || str(ident.apna_employer_id)
+      || str(variables.apnaEmployerId) || str(variables.userId),
+    employerId: str(ident.employer_id) || str(variables.employerId),
     userName: str(rec.userDisplayName) || str(rec.blueMachines && rec.blueMachines.userDisplayName)
       || str(payload.user_name) || str(ident.user_name) || str(ident.employer_name),
     phoneNumber: str(rec.userPhoneNumber) || str(rec.blueMachines && rec.blueMachines.userPhoneNumber)
       || str(payload.user_phone_number) || str(payload.phone_number) || str(ident.phone_number),
-    companyName: str(ident.company_name),
+    companyName: str(ident.company_name) || str(variables.companyName),
     sessionId: str(payload.session_id) || str(ident.session_id),
-    entryPage: str(ev && ev.entry_page),
+    entryPage: str(ev && ev.entry_page) || str(variables.apnaSupportPage),
     messages: parseTranscript(transcriptText),
     humanMessages: Array.isArray(rec.humanTranscript) ? rec.humanTranscript : [],
+    toolCalls: Array.isArray(rec.toolCalls) ? rec.toolCalls : [],
+    handoffEvents: Array.isArray(rec.handoffEvents) ? rec.handoffEvents : [],
     humanHandoff: bm.hasHumanHandoff === true,
     handoffAgentName: str(bm.handoffAgentName),
     handoffPhase: str(bm.handoffPhase),
@@ -429,6 +536,8 @@ function fromFlat(rec) {
     entryPage: str(rec.entry_page),
     messages,
     humanMessages: [],
+    toolCalls: [],
+    handoffEvents: [],
     humanHandoff: !!(rec.human_transcript_json && rec.human_transcript_json.length),
     handoffAgentName: str(rec.handoff_agent_name),
     handoffPhase: str(rec.handoff_phase),
@@ -468,9 +577,12 @@ function fromFlat(rec) {
 function enrich(c) {
   const msgs = c.messages;
   const humanMsgs = Array.isArray(c.humanMessages) ? c.humanMessages : [];
+  c.toolCalls = Array.isArray(c.toolCalls) ? c.toolCalls : [];
+  c.handoffEvents = Array.isArray(c.handoffEvents) ? c.handoffEvents : [];
   const { date, time } = toIST(c.createdAt);
   c.dateIST = date;
   c.timeIST = time;
+  c.inSupportHours = isSupportHoursIST(time);
   c.userMessages = msgs.filter((m) => m.speaker === 'User').length;
   c.botMessages = msgs.filter((m) => m.speaker === 'Bot').length;
   c.agentMessages = msgs.filter((m) => m.speaker === 'Agent').length
@@ -495,21 +607,51 @@ function enrich(c) {
   });
   c.closingSent = msgs.some((m) => m.speaker === 'Bot' && BOT_LINES.closing.test(m.text));
 
-  // Handoff: evaluator's answer, a human agent's message, a handoff tool call, or a connect / support-hours line
-  const toolHandoff = c.turns.some((t) => t.tools.some((x) => x.tool === 'agent_handoff'));
+  // Tie raw BlueMachines calls to the employer message that triggered each one.
+  const userIndices = msgs.map((m, i) => m.speaker === 'User' ? i : -1).filter((i) => i >= 0);
+  c.toolCalls = c.toolCalls.map((call) => ({
+    ...call,
+    messageIndex: Number.isInteger(call.messageIndex)
+      ? call.messageIndex
+      : (userIndices[Math.max(0, Number(call.userMessageNo || 1) - 1)] ?? -1),
+  }));
+
+  // Handoff: evaluator evidence, raw tool calls, lifecycle events, timestamps, or an agent message.
+  const evaluatorToolHandoff = c.turns.some((t) => t.tools.some((x) => x.tool === 'agent_handoff'));
+  const rawHandoffCalls = c.toolCalls.filter((call) => call.tool === 'agent_handoff');
+  const lastRawHandoff = rawHandoffCalls[rawHandoffCalls.length - 1] || null;
+  const lastOutput = String(lastRawHandoff?.output || '');
+  const event = (name) => c.handoffEvents.includes(name);
   const lineHandoff = msgs.some((m) => m.speaker === 'Bot' && BOT_LINES.handoff.test(m.text));
   const closedLine = msgs.some((m) => m.speaker === 'Bot' && BOT_LINES.supportClosed.test(m.text));
-  // With evaluator turn data, only a real handoff (agent_handoff call or an agent's message) counts;
-  // a connect line with no call is shown as "said only". Without it, the transcript lines are all we have.
-  const hasToolData = c.turns.length > 0;
-  c.handoff = hasToolData
-    ? !!(c.evalHandoff || toolHandoff || c.humanHandoff || c.agentMessages > 0)
-    : !!(c.evalHandoff || c.humanHandoff || c.agentMessages > 0 || lineHandoff);
-  if (c.agentMessages > 0 || c.agentJoined) c.handoffStatus = 'agent_joined';
-  else if (c.handoff && (c.outcome === 'handoff_closed_hours' || closedLine)) c.handoffStatus = 'support_closed';
+  const hasToolData = c.turns.length > 0 || c.toolCalls.length > 0;
+  c.handoff = !!(c.evalHandoff || evaluatorToolHandoff || rawHandoffCalls.length
+    || c.humanHandoff || c.handoffRequestedAt || event('requested') || c.agentMessages > 0);
+  if (!hasToolData && lineHandoff) c.handoff = true; // Raw Mongo transcripts have no tool evidence.
+
+  const agentJoined = c.agentMessages > 0 || c.agentJoined || event('human_active') || c.handoffHumanActiveAt;
+  const supportClosedOutput = /closed right now|reopens at/i.test(lastOutput);
+  if (agentJoined) c.handoffStatus = 'agent_joined';
+  else if (c.handoff && (supportClosedOutput || closedLine || c.outcome === 'handoff_closed_hours')) c.handoffStatus = 'support_closed';
   else if (c.handoff) c.handoffStatus = 'requested';
   else if (lineHandoff) c.handoffStatus = 'said_only';
   else c.handoffStatus = 'none';
+
+  const waits = rawHandoffCalls.map((call) => Number(call.latencyMs)).filter(Number.isFinite);
+  c.handoffWaitSeconds = waits.length ? Math.round(Math.max(...waits) / 1000) : null;
+  c.handoffDetail = null;
+  if (c.handoffStatus === 'requested') {
+    if (/human support could not be reached/i.test(lastOutput)) {
+      c.handoffDetail = 'Support could not be reached';
+    } else if (/support service is temporarily unavailable/i.test(lastOutput)) {
+      c.handoffDetail = 'Support service unavailable';
+    } else if (lastRawHandoff && !lastOutput.trim() && !event('requested')) {
+      const waited = c.handoffWaitSeconds === null ? '' : ` after ${c.handoffWaitSeconds} s`;
+      c.handoffDetail = `No result${waited}, no Freshchat request (usually the employer did not accept the handoff prompt)`;
+    } else if (event('requested') && !event('assigned') && !event('human_active')) {
+      c.handoffDetail = 'Sent to Freshchat, no agent assigned';
+    }
+  }
 
   if (c.botScorePct === null) {
     const scores = c.turns.map((t) => t.score).filter((s) => s !== null);

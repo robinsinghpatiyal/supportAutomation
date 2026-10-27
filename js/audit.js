@@ -1,7 +1,10 @@
-// The 8 audit categories. Each rule returns null (not in the queue) or
+// The audit categories. Each rule returns null (not in the queue) or
 // { reasons: [text], alert?: text } where alert marks the part an auditor must check first.
 
-import { THRESHOLDS, FRUSTRATION_TERMS, AGENT_REQUEST_TERMS, BOT_LINES, LOOP_TAGS, CATEGORIES } from './config.js';
+import {
+  THRESHOLDS, FRUSTRATION_TERMS, AGENT_REQUEST_TERMS, BOT_LINES, LOOP_TAGS, CATEGORIES,
+  ACKNOWLEDGEMENT, NO_REPLY_AFTER_CLOSING, EMOJI_ONLY, GREETING_ONLY, HINDI_WORDS,
+} from './config.js';
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 function termRegex(terms) {
@@ -70,7 +73,10 @@ const isHandoffMsg = (m) => m.speaker === 'Agent' || (m.speaker === 'Bot' && BOT
 export function turnForUserMessage(c, i) {
   const userIdx = c.messages.slice(0, i + 1).filter((m) => m.speaker === 'User').length; // 1-based
   const text = normalizeText(c.messages[i].text);
-  return c.turns.find((t) => normalizeText(t.userInput) === text) || c.turns.find((t) => t.no === userIdx) || null;
+  const numbered = c.turns.find((t) => t.no === userIdx);
+  if (numbered && normalizeText(numbered.userInput) === text) return numbered;
+  const matching = c.turns.filter((t) => normalizeText(t.userInput) === text);
+  return matching.length === 1 ? matching[0] : numbered || matching[0] || null;
 }
 
 // Was the chat really handed off after the employer's message at index i?
@@ -84,16 +90,59 @@ function handoffIn(c, i, nextOnly) {
   const window = msgs.slice(i + 1, end);
   const agentMsg = window.some((m) => m.speaker === 'Agent');
   const line = window.some((m) => m.speaker === 'Bot' && BOT_LINES.handoff.test(m.text));
-  if (!c.turns.length) return { real: agentMsg || line, saidOnly: false };
   let tool = false;
   msgs.forEach((m, k) => {
     if (m.speaker !== 'User' || k < Math.max(i, 0) || (nextOnly && k !== i)) return;
     const t = turnForUserMessage(c, k);
     if (t && t.tools.some((x) => x.tool === 'agent_handoff')) tool = true;
   });
-  const real = agentMsg || tool || (!nextOnly && i < 0 && c.agentJoined === true);
-  return { real, saidOnly: !real && line };
+  const rawTool = (c.toolCalls || []).some((call) => call.tool === 'agent_handoff'
+    && (i < 0 || (nextOnly ? call.messageIndex === i : call.messageIndex >= i)));
+  tool = tool || rawTool;
+  const hasToolData = c.turns.length > 0 || (c.toolCalls || []).length > 0;
+  const real = agentMsg || tool || (!nextOnly && i < 0 && (c.agentJoined === true || c.agentMessages > 0))
+    || (!hasToolData && line);
+  return {
+    real,
+    saidOnly: !real && line,
+    tool,
+    agent: agentMsg,
+    replied: window.some((m) => m.speaker === 'Bot' || m.speaker === 'Agent'),
+  };
 }
+
+function handoffTriggers(c) {
+  const indices = new Set((c.toolCalls || [])
+    .filter((call) => call.tool === 'agent_handoff' && call.messageIndex >= 0)
+    .map((call) => call.messageIndex));
+  c.messages.forEach((m, i) => {
+    if (m.speaker !== 'User') return;
+    const turn = turnForUserMessage(c, i);
+    if (turn?.tools.some((tool) => tool.tool === 'agent_handoff')) indices.add(i);
+  });
+  return [...indices];
+}
+
+function unresolvedReplyWindow(c, messageIndex) {
+  const messages = repliesAfter(c.messages, messageIndex);
+  const rawCalls = (c.toolCalls || []).filter((call) =>
+    call.tool === 'agent_handoff' && call.messageIndex === messageIndex);
+  // BlueMachines raw calls are authoritative when present. Evaluator turns can
+  // occasionally attach a later call to an earlier employer message.
+  const evaluatorTurn = c.toolCalls?.length ? null : turnForUserMessage(c, messageIndex);
+  const evaluatorCalls = (evaluatorTurn?.tools || []).filter((tool) => tool.tool === 'agent_handoff');
+  const calls = rawCalls.length ? rawCalls : evaluatorCalls;
+  const agent = messages.some((message) => message.speaker === 'Agent');
+  const bot = messages.some((message) => message.speaker === 'Bot');
+  const supportClosed = messages.some((message) => message.speaker === 'Bot' && BOT_LINES.supportClosed.test(message.text))
+    || calls.some((call) => /closed right now|reopens at|closed hours/i.test(String(call.output || call.result || '')));
+  return { calls, agent, bot, supportClosed };
+}
+
+const HINDI_SET = new Set(HINDI_WORDS);
+const wordsIn = (text) => String(text || '').toLowerCase().match(/[a-z]+/g) || [];
+const hindiWordsIn = (text) => new Set(wordsIn(text).filter((word) => HINDI_SET.has(word)));
+const onlyNumberLinkOrId = (text) => /^\s*(?:\d+|https?:\/\/\S+|www\.\S+|[a-f\d]{12,}|[a-z]*\d[\w-]*)\s*$/i.test(text);
 
 const RULES = {
   eval_flagged(c) {
@@ -133,6 +182,10 @@ const RULES = {
       .map((m, index) => ({ ...m, index }))
       .filter((m) => m.speaker === 'Bot' && !BOT_LINES.welcome.test(m.text) && !BOT_LINES.hold.test(m.text) && m.text);
     for (let k = 1; k < bot.length; k++) {
+      if (BOT_LINES.closing.test(bot[k - 1].text) && BOT_LINES.closing.test(bot[k].text)) {
+        reasons.push('Closing line sent again.');
+        continue;
+      }
       const s = similarity(bot[k - 1].text, bot[k].text);
       if (s >= THRESHOLDS.loopSimilarity) {
         reasons.push(`Bot replied ${s === 1 ? 'the same' : `${Math.round(s * 100)}% the same`} twice in a row: "${snip(bot[k].text)}"`);
@@ -167,23 +220,38 @@ const RULES = {
   unresolved(c) {
     const reasons = [];
     const noAnswers = c.resolveAnswers.filter((a) => a.answer === 'no');
-    noAnswers.forEach((a) => reasons.push(`Employer answered "${snip(a.text, 60)}" to "Did this resolve your query?".`));
-    if (!noAnswers.length && c.resolvedByEmployer === 'no') reasons.push('Evaluator recorded the employer\'s answer to the resolve question as no.');
-    if (c.csat === 'no') reasons.push('CSAT answer was no.');
-    if (c.outcome === 'unresolved') reasons.push('Evaluator marked the outcome unresolved.');
-    if (!reasons.length) return null;
-    // handoff integrity: from the first "no" onwards (or the whole chat, when the signal is the outcome or CSAT)
-    const from = noAnswers.length ? noAnswers[0].index : -1;
-    const h = handoffIn(c, from, false);
     let alert = null;
-    if (h.real) {
-      reasons.push(c.handoffStatus === 'support_closed' ? 'Passed to support, but support was closed.' : 'Passed to support.');
-    } else if (h.saidOnly) {
-      alert = 'Not passed to support';
-      reasons.push('The bot said it would connect, but no handoff was made.');
+    if (noAnswers.length) {
+      noAnswers.forEach((answer) => {
+        const window = unresolvedReplyWindow(c, answer.index);
+        const prefix = `Employer answered "${snip(answer.text, 60)}" to "Did this resolve your query?".`;
+        if (window.calls.length || window.agent) {
+          const passed = window.supportClosed ? 'Passed to support, but support was closed.' : 'Passed to support.';
+          const detail = !window.agent && c.handoffDetail ? ` ${c.handoffDetail}.` : '';
+          reasons.push(`${prefix} ${passed}${detail}`);
+        } else if (!window.bot && !window.agent) {
+          alert ||= 'No reply to the no';
+          reasons.push(`${prefix} No reply to the no.`);
+        } else {
+          alert ||= 'Not passed to support';
+          reasons.push(`${prefix} Not passed to support.`);
+        }
+      });
     } else {
-      alert = 'Not passed to support';
-      reasons.push('Not passed to support after it was unresolved.');
+      if (c.resolvedByEmployer === 'no') reasons.push('Evaluator recorded the employer\'s answer to the resolve question as no.');
+      if (c.csat === 'no') reasons.push('CSAT answer was no.');
+      if (c.outcome === 'unresolved') reasons.push('Evaluator marked the outcome unresolved.');
+      if (!reasons.length) return null;
+      const h = handoffIn(c, -1, false);
+      if (h.real) {
+        reasons.push(c.handoffStatus === 'support_closed' ? 'Passed to support, but support was closed.' : 'Passed to support.');
+      } else if (h.saidOnly) {
+        alert = 'Not passed to support';
+        reasons.push('The bot said it would connect, but no handoff was made.');
+      } else {
+        alert = 'Not passed to support';
+        reasons.push('Not passed to support after it was unresolved.');
+      }
     }
     return { reasons, alert };
   },
@@ -206,6 +274,74 @@ const RULES = {
     const e = escalations[c.id];
     if (!e) return null;
     return { reasons: [`${e.source === 'csv' ? 'Listed in the escalations file' : 'Marked by support'}${e.by ? ` (${e.by})` : ''}${e.note ? `: ${e.note}` : '.'}`] };
+  },
+
+  flow_checks(c) {
+    const reasons = [];
+    let alert = null;
+
+    // Every employer message needs a visible reply, an agent response, or a handoff call.
+    c.messages.forEach((m, i) => {
+      if (m.speaker !== 'User') return;
+      const prior = c.messages[i - 1];
+      const allowedAfterClosing = prior?.speaker === 'Bot' && BOT_LINES.closing.test(prior.text)
+        && (NO_REPLY_AFTER_CLOSING.test(m.text) || EMOJI_ONLY.test(m.text));
+      const replies = repliesAfter(c.messages, i);
+      const handoff = handoffIn(c, i, true);
+      if (!allowedAfterClosing && !replies.some((reply) => reply.speaker === 'Bot' || reply.speaker === 'Agent') && !handoff.tool) {
+        reasons.push(`No reply: Employer got no reply after "${snip(m.text)}".`);
+        alert ||= 'Employer got no reply';
+      }
+    });
+
+    // A handoff call that produced no later bot or agent message is a separate operational failure.
+    handoffTriggers(c).forEach((i) => {
+      const visibleAfter = c.messages.slice(i + 1).some((m) => m.speaker === 'Bot' || m.speaker === 'Agent')
+        || (c.humanMessages || []).some((m) => m.speaker === 'Agent');
+      if (visibleAfter) return;
+      const detail = c.handoffDetail ? ` ${c.handoffDetail}.` : '';
+      const waited = c.handoffWaitSeconds === null ? '' : ` Waited ${c.handoffWaitSeconds} s.`;
+      reasons.push(`No reply after the handoff call.${detail}${waited}`);
+      alert = 'No reply after the handoff call';
+    });
+
+    if (c.handoffStatus === 'requested' && !c.agentMessages && c.inSupportHours) {
+      reasons.push(`Handoff requested, no agent joined${c.handoffDetail ? `: ${c.handoffDetail}` : ''}.`);
+      alert ||= 'Handoff requested, no agent joined';
+    }
+
+    if (c.handoffStatus === 'said_only') {
+      reasons.push('Connect line without a real handoff.');
+      alert ||= 'Connect line without a real handoff';
+    }
+
+    c.messages.forEach((m, i) => {
+      if (m.speaker !== 'Bot' || !BOT_LINES.closing.test(m.text)) return;
+      const employer = c.messages[i - 1];
+      if (employer?.speaker !== 'User' || !ACKNOWLEDGEMENT.test(employer.text)) return;
+      let previousBot = null;
+      for (let k = i - 2; k >= 0; k--) {
+        if (c.messages[k].speaker === 'Bot') { previousBot = c.messages[k]; break; }
+      }
+      if (previousBot && !BOT_LINES.resolveQuestion.test(previousBot.text) && !BOT_LINES.supportEmail.test(previousBot.text)) {
+        reasons.push('Closed without asking: the closing line followed an acknowledgement without a resolve question.');
+      }
+    });
+
+    c.messages.forEach((m, i) => {
+      if (m.speaker !== 'User' || wordsIn(m.text).length < 3 || GREETING_ONLY.test(m.text) || onlyNumberLinkOrId(m.text)) return;
+      const reply = repliesAfter(c.messages, i).find((next) => next.speaker === 'Bot');
+      if (!reply || BOT_LINES.welcome.test(reply.text)) return;
+      const employerHinglish = hindiWordsIn(m.text).size >= 1;
+      const botHinglish = hindiWordsIn(reply.text).size >= 2;
+      if (!employerHinglish && botHinglish) {
+        reasons.push(`English message answered in Hinglish: "${snip(m.text)}" → "${snip(reply.text)}"`);
+      } else if (employerHinglish && !botHinglish) {
+        reasons.push(`Hinglish message answered in English: "${snip(m.text)}" → "${snip(reply.text)}"`);
+      }
+    });
+
+    return reasons.length ? { reasons, alert } : null;
   },
 };
 

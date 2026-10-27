@@ -34,6 +34,7 @@ export function summarize(convs) {
     handoffPct: pct(handedOff.length, engaged.length),
     handedOff: handedOff.length,
     supportClosed: handedOff.filter((c) => c.handoffStatus === 'support_closed').length,
+    handoffNoAgent: engaged.filter((c) => c.handoffStatus === 'requested' && !c.agentMessages && c.inSupportHours).length,
     saidOnly: engaged.filter((c) => c.handoffStatus === 'said_only').length,
     humanHandoffs: humanHandoffs.length,
     humanHandoffResolved: humanHandoffs.filter((c) => c.handoffPhase === 'RESOLVED').length,

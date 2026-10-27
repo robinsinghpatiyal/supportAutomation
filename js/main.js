@@ -20,10 +20,12 @@ const SHORT = {
   early_drop: 'Early drop-off',
   high_volume: 'Abandoned (many msgs)',
   support_escalation: 'Support escalation',
+  flow_checks: 'Flow / handoff',
 };
 const ALERT_LABEL = {
   agent_request: 'not handed off in the next reply',
   unresolved: 'not passed to support',
+  flow_checks: 'flow or handoff checks',
 };
 
 const state = {
@@ -318,7 +320,7 @@ function renderOverviewBody() {
     ['Engaged chats', s.engaged, `of ${s.chats} chats; ${s.chats - s.engaged} closed without a message`],
     ['Avg conversation time', fmtDuration(s.avgConversationSeconds), 'Average duration in the loaded export'],
     ['Contained by the bot', fmtPct(s.containmentPct), `${s.handedOff} handed off (${s.supportClosed} while support was closed)${s.saidOnly ? `; ${s.saidOnly} told "connecting" with no handoff` : ''}`],
-    ['Human support chats', s.humanHandoffs, `${s.humanHandoffResolved} resolved · ${s.humanHandoffActive} active · ${s.humanHandoffClosedByUser} closed by user · ${s.humanHandoffTimedOut} timed out`],
+    ['Human support chats', s.humanHandoffs, `${s.humanHandoffResolved} resolved · ${s.humanHandoffActive} active · ${s.humanHandoffClosedByUser} closed by user · ${s.humanHandoffTimedOut} timed out · ${s.handoffNoAgent} requested in support hours, no agent`],
     ['Employer said resolved', fmtPct(s.resolveYesPct), s.resolveAsked ? `of ${s.resolveAsked} asked "Did this resolve your query?"` : 'No one was asked yet'],
     ['Avg bot score', s.avgBotScorePct === null ? '–' : `${Math.round(s.avgBotScorePct)}%`, `evaluator turn scores, ${s.evaluated} evaluated chats`],
     ['CSAT yes', s.csatGiven ? fmtPct(s.csatYesPct) : '–', s.csatGiven ? `of ${s.csatGiven} answers` : 'No CSAT answers in the data yet'],
@@ -403,10 +405,12 @@ function renderList(params) {
 }
 
 function handoffChip(c) {
+  if (c.handoffStatus === 'requested') {
+    return `<span class="chip" title="${esc(c.handoffDetail || 'A handoff was requested, but no agent joined')}">Requested</span>`;
+  }
   return {
     agent_joined: '<span class="chip good">Agent joined</span>',
     support_closed: '<span class="chip warn">Support closed</span>',
-    requested: '<span class="chip">Handed off</span>',
     said_only: '<span class="chip alert" title="The bot said it would connect, but no handoff was made">⚠ Said only</span>',
     none: '<span class="muted">–</span>',
   }[c.handoffStatus];
@@ -474,8 +478,32 @@ function fmtMessageTimestamp(value) {
   return `${ist.slice(0, 10)} ${ist.slice(11, 19)} IST`;
 }
 
+function handoffCallText(c, call) {
+  const parts = ['agent_handoff called'];
+  parts.push(c.handoffStatus === 'agent_joined' ? 'agent joined' : 'no agent joined');
+  if (call.output) parts.push(`"${String(call.output).replace(/\s+/g, ' ').trim()}"`);
+  if (Number.isFinite(Number(call.latencyMs))) parts.push(`waited ${Math.round(Number(call.latencyMs) / 1000)} s`);
+  return parts.join(' · ');
+}
+
+function spokenTranscriptLines(c, renderMessage, renderCall) {
+  const lines = [];
+  c.messages.forEach((m, i) => {
+    lines.push(renderMessage(m));
+    if (m.speaker !== 'User') return;
+    (c.toolCalls || [])
+      .filter((call) => call.tool === 'agent_handoff' && call.messageIndex === i)
+      .forEach((call) => lines.push(renderCall(call)));
+  });
+  return lines;
+}
+
 function compactTranscript(c) {
-  const bot = c.messages.map((m) => `${m.speaker.toLowerCase()}: ${m.text}`);
+  const bot = spokenTranscriptLines(
+    c,
+    (m) => `${m.speaker.toLowerCase()}: ${m.text}`,
+    (call) => `system: ${handoffCallText(c, call)}`,
+  );
   const human = (c.humanMessages || []).map((m) => {
     const timestamp = fmtMessageTimestamp(m.at);
     return `${timestamp ? `[${timestamp}] ` : ''}${m.speaker.toLowerCase()}: ${m.text}`;
@@ -498,7 +526,11 @@ function transcriptText(c) {
     `CSAT: ${c.csat || 'not given'}`,
     `Human handoff: ${handoff}`,
   ];
-  const messages = c.messages.map((m) => `${speaker[m.speaker] || m.speaker}: ${m.text}`);
+  const messages = spokenTranscriptLines(
+    c,
+    (m) => `${speaker[m.speaker] || m.speaker}: ${m.text}`,
+    (call) => `System: ${handoffCallText(c, call)}`,
+  );
   const humanMessages = (c.humanMessages || []).map((m) => {
     const timestamp = fmtMessageTimestamp(m.at);
     return `${timestamp ? `[${timestamp}] ` : ''}${m.name || speaker[m.speaker] || m.speaker}: ${m.text}`;
@@ -673,11 +705,11 @@ function exportEscalations(conversations = null) {
 
 function exportCSV(rows) {
   const head = ['conversation_id', 'date_ist', 'time_ist', 'conversation_seconds', 'employer_name', 'employer_number', 'apna_employer_id', 'company_name', 'entry_page', 'primary_intent',
-    'employer_messages', 'bot_replies', 'handoff', 'outcome', 'explicitly_resolved', 'bot_score_pct', 'helpfulness_10',
+    'employer_messages', 'bot_replies', 'handoff', 'handoff_detail', 'handoff_wait_seconds', 'outcome', 'explicitly_resolved', 'bot_score_pct', 'helpfulness_10',
     'csat', 'audit_queues', 'needs_check', 'reasons', 'escalation_note', 'summary', 'transcript'];
   const data = rows.map((c) => [
     c.id, c.dateIST, c.timeIST, c.durationSeconds, c.userName, c.phoneNumber, c.apnaEmployerId, c.companyName, c.entryPage, c.primaryIntent,
-    c.userMessages, c.botReplies, c.handoffStatus, c.outcome, explicitlyResolved(c) ? 'yes' : 'no', c.botScorePct, c.helpfulness10,
+    c.userMessages, c.botReplies, c.handoffStatus, c.handoffDetail, c.handoffWaitSeconds, c.outcome, explicitlyResolved(c) ? 'yes' : 'no', c.botScorePct, c.helpfulness10,
     c.csat, c.categories.map((k) => CATEGORIES.find((x) => x.key === k).name).join('; '), c.alerts.join('; '),
     c.categories.map((k) => `${SHORT[k]}: ${c.audit[k].reasons.join(' ')}`).join(' | '),
     state.escalations[c.id]?.note || '', c.summary,
@@ -805,6 +837,11 @@ function transcriptHTML(c) {
     }
     const who = m.speaker === 'Bot' ? 'Apna Expert' : m.speaker === 'User' ? 'Employer' : 'Support agent';
     html += `<div class="msg ${esc(m.speaker)}"><div class="who">${who}</div>${esc(m.text)}</div>`;
+    if (m.speaker === 'User') {
+      (c.toolCalls || [])
+        .filter((call) => call.tool === 'agent_handoff' && call.messageIndex === i)
+        .forEach((call) => { html += `<div class="turn-note muted">${esc(handoffCallText(c, call))}</div>`; });
+    }
   });
   if (pending) html += turnNote(pending);
   if (c.humanMessages?.length) {

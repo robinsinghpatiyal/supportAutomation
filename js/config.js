@@ -10,7 +10,12 @@ export const THRESHOLDS = {
   highVolumeUserMessages: 5,
   // Eval Bot Flagged: any turn scored at or below this (1 to 5), or the chat score at or below it
   lowScore: 2,
+  // Language check: long enough employer messages and distinct Hindi words in a bot reply
+  languageMinEmployerWords: 3,
+  languageMinBotHindiWords: 2,
 };
+
+export const SUPPORT_HOURS_IST = { start: '09:00', end: '19:00' };
 
 // Conversations whose id matches one of these are internal tests (hidden by default)
 export const TEST_CONVERSATION_PATTERNS = [/^bm_dummy/i, /^test/i];
@@ -29,7 +34,7 @@ export const FRUSTRATION_TERMS = [
   // English
   'useless', 'frustrating', 'frustrated', 'terrible', 'stupid', 'bad bot', 'worst', 'pathetic',
   'rubbish', 'nonsense', 'ridiculous', 'horrible', 'disgusting', 'waste of time', 'wasting my time',
-  'not helpful', 'no help', 'idiot', 'dumb', 'fed up', 'irritating', 'annoying', 'hate', 'wtf',
+  'not helpful', /\bno help\b(?!\s+(?:required|needed))/i, 'idiot', 'dumb', 'fed up', 'irritating', 'annoying', 'hate', 'wtf',
   'third class', 'harassment', 'harassing', 'mental torture', 'mental agony', 'blackmail',
   'fraud', 'fraudulent', 'scam', 'scammer', 'cheat', 'cheating', 'fake company', 'stole my money',
   'consumer court', 'legal notice', 'legal action', 'lawyer', 'police complaint', 'cyber cell',
@@ -56,6 +61,8 @@ export const BOT_LINES = {
   welcome: /welcome to apna support/i,
   resolveQuestion: /did this resolve your query|kya (isse|is se) aapki query (solve|resolve)/i,
   closing: /thank you for choosing apna|apna chunne ke liye dhanyavaad/i,
+  salesAnswer: /thank you! our sales team will reach out to you within 24 hours|your request is already with our sales team/i,
+  supportEmail: /employersupport@apna\.co/i,
   hold: /support team will join this chat shortly|support team jald hi is chat/i,
   // a handoff was made or tried (connect lines, hold line, support-hours lines)
   handoff: new RegExp([
@@ -74,13 +81,24 @@ export const BOT_LINES = {
 };
 
 // Employer replies to "Did this resolve your query?"
-export const ANSWER_YES = /^\s*(yes|yeah|yep|haan|han|ha|haa|ji|ji haan|ok|okay|okk|k|thanks|thank you|thankyou|thx|resolved|done|solved|ho gaya|hogaya|theek hai|thik hai|sahi hai)\b/i;
-export const ANSWER_NO = /^\s*(no|nope|nahi|nahin|nhi|nai|ni|na|not really|not resolved|still not|abhi bhi nahi|nahi hua|nhi hua)\b/i;
+export const ANSWER_YES = /^\s*(yes|yeah|yep|haan|han|ha|haa|ji|ji haan|ok|okay|okk|k|sure|got it|thanks|thank you|thankyou|thx|resolved|done|solved|nothing|nothing else|no help required|no help needed|no more help|no need|ho gaya|hogaya|theek hai|thik hai|sahi hai)\b/i;
+export const ANSWER_NO = /^\s*(?!(?:no help required|no help needed|no more help|no need)\b)(no|nope|nahi|nahin|nhi|nai|ni|na|not really|not resolved|still not|abhi bhi nahi|nahi hua|nhi hua)\b/i;
+
+export const ACKNOWLEDGEMENT = /^\s*(ok|okay|okk|k|sure|thanks|thank you|thankyou|thx|got it|nothing|nothing else)\b/i;
+export const NO_REPLY_AFTER_CLOSING = /^\s*(ok|k|ko|thanks|bye|yes|no|done|nothing|nothing else|no help required|no more help|can you close)[.!]*\s*$/i;
+export const EMOJI_ONLY = /^\s*(?:\p{Extended_Pictographic}|\p{Emoji_Presentation}|\uFE0F|\u200D)+\s*$/u;
+export const GREETING_ONLY = /^\s*(hi|hai|hii)\s*[!.]*\s*$/i;
+
+export const HINDI_WORDS = [
+  'nhi', 'nahi', 'nai', 'h', 'hai', 'kya', 'kyu', 'kaise', 'kab', 'kitna', 'mera', 'meri',
+  'mujhe', 'aap', 'karo', 'kro', 'kar', 'btao', 'batao', 'ho', 'hua', 'rha', 'rahe', 'abhi',
+  'jaldi', 'thik', 'acha', 'bhai', 'ji', 'kuch', 'koi', 'bhi', 'se', 'ka', 'ke', 'ki', 'ko',
+];
 
 // Evaluator tags that mean the bot repeated itself or looped
 export const LOOP_TAGS = ['REPEATED_ANSWER', 'WHICH_JOB_LOOP', 'SUPPORT_OFFER_REPEATED'];
 
-// The 8 audit categories (names and objectives from the audit proposal)
+// The 9 audit categories (names and objectives from the audit proposal)
 export const CATEGORIES = [
   {
     key: 'eval_flagged',
@@ -129,5 +147,11 @@ export const CATEGORIES = [
     name: 'Support Team Escalations',
     rule: 'Marked in this app by a support agent or lead, or listed in an uploaded escalations CSV (a conversation_id column).',
     objective: 'Capture downstream issues reported by the support team (missing context, misrouted chats).',
+  },
+  {
+    key: 'flow_checks',
+    name: 'Chat Flow & Handoff Checks',
+    rule: 'Checks missing replies, incomplete or fake handoffs, premature closing, and English/Hinglish reply mismatches.',
+    objective: 'Catch broken conversation flow and handoff behaviour that other outcome-based queues miss.',
   },
 ];
