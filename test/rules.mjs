@@ -22,15 +22,20 @@ function transcript(parts, variables = {}) {
   ].join('\n');
 }
 
-function makeChat({ parts, humanTranscript = '', variables = {}, externalUserId = '9000000000' }) {
+function makeChat({
+  parts, humanTranscript = '', variables = {}, externalUserId = '9000000000',
+  agentName = 'Apna Expert', interactionEnvironment = 'LIVE', evaluationTurns = null,
+}) {
   sequence++;
   const headers = [
     'conversationId', 'interactionDate', 'userDisplayName', 'externalUserId',
-    'callAnalysisStatus', 'humanTranscript', 'transcript',
+    'agentName', 'interactionEnvironment', 'callAnalysisStatus', 'humanTranscript', 'transcript',
+    'evaluation.eval_version', 'evaluation.turn_by_turn',
   ];
   const row = [
     `synthetic-${sequence}`, '2026-10-15T06:00:00.000Z', 'Synthetic employer', externalUserId,
-    'PENDING', humanTranscript, transcript(parts, variables),
+    agentName, interactionEnvironment, evaluationTurns ? 'OK' : 'PENDING', humanTranscript, transcript(parts, variables),
+    evaluationTurns ? 'synthetic-v1' : '', evaluationTurns ? JSON.stringify(evaluationTurns) : '',
   ];
   const csv = `${headers.map(csvCell).join(',')}\n${row.map(csvCell).join(',')}\n`;
   const records = parseBlueMachinesExport(csv);
@@ -46,6 +51,15 @@ assert.equal(noOutput.handoffStatus, 'requested');
 assert.match(noOutput.handoffDetail, /No result/i);
 assert.equal(noOutput.handoffWaitSeconds, 100);
 assert.equal(noOutput.audit.flow_checks.alert, 'No reply after the handoff call');
+
+const supportOffer = makeChat({
+  parts: [
+    'User: I need help with my account',
+    'AI agent: If you prefer, I can connect you with our support team instead. Would you like that?',
+  ],
+});
+assert.equal(supportOffer.handoffStatus, 'none');
+assert.doesNotMatch(supportOffer.audit.flow_checks?.reasons.join(' ') || '', /Connect line without a real handoff/);
 
 const unreachable = makeChat({
   parts: ['User: connect me to support', toolBlock('Human support could not be reached.')],
@@ -78,6 +92,18 @@ assert.equal(internal.apnaEmployerId, testId);
 assert.equal(internal.phoneNumber, '9111111111');
 assert.equal(internal.isTest, true);
 
+const testAgent = makeChat({
+  parts: ['User: hello', 'AI agent: Hello!'],
+  agentName: '[TEST ]Apna Expert Copy',
+});
+assert.equal(testAgent.isTest, true);
+
+const nonLive = makeChat({
+  parts: ['User: hello', 'AI agent: Hello!'],
+  interactionEnvironment: 'STAGING',
+});
+assert.equal(nonLive.isTest, true);
+
 const noThenQuestion = makeChat({
   parts: [
     'AI agent: Did this resolve your query?',
@@ -102,6 +128,26 @@ assert.equal(laterRefundHandoff.audit.unresolved.alert, 'No reply to the no');
 assert.match(laterRefundHandoff.audit.unresolved.reasons.join(' '), /No reply to the no/);
 assert.doesNotMatch(laterRefundHandoff.audit.unresolved.reasons.join(' '), /Passed to support/);
 
+const rawCallOverridesEvaluator = makeChat({
+  parts: [
+    'AI agent: Did this resolve your query?',
+    'User: no',
+    'User: What are database credits?',
+    'AI agent: Database credits let you unlock candidate profiles.',
+    'User: I want a refund of my credits',
+    toolBlock(undefined, 100000),
+  ],
+  evaluationTurns: [
+    { turn: 1, user_input: 'no', bot_output: null, tool_calls: [{ tool: 'agent_handoff' }] },
+    { turn: 2, user_input: 'What are database credits?', bot_output: 'Database credits let you unlock candidate profiles.', tool_calls: [] },
+    { turn: 3, user_input: 'I want a refund of my credits', bot_output: null, tool_calls: [{ tool: 'agent_handoff' }] },
+  ],
+});
+assert.equal(rawCallOverridesEvaluator.audit.unresolved.alert, 'No reply to the no');
+assert.doesNotMatch(rawCallOverridesEvaluator.audit.unresolved.reasons.join(' '), /Passed to support/);
+assert.equal(rawCallOverridesEvaluator.audit.flow_checks.reasons
+  .filter((reason) => reason.startsWith('No reply after the handoff call')).length, 1);
+
 const acceptedAfterClosing = makeChat({
   parts: [
     'AI agent: Thank you for choosing Apna! Have a great day.',
@@ -113,14 +159,27 @@ assert.equal(acceptedAfterClosing.audit.frustration, undefined);
 assert.equal(acceptedAfterClosing.audit.flow_checks, undefined);
 assert.equal(acceptedAfterClosing.resolveAnswers.some((answer) => answer.answer === 'no'), false);
 
+const acknowledgementsAfterClosing = makeChat({
+  parts: [
+    'AI agent: Thank you for choosing Apna! Have a great day.',
+    'User: ok',
+    'User: thanks',
+  ],
+});
+assert.doesNotMatch(acknowledgementsAfterClosing.audit.flow_checks?.reasons.join(' ') || '', /No reply/);
+
 const duplicateClosing = makeChat({
   parts: [
+    'AI agent: Thank you for choosing Apna! Have a great day.',
+    'User: nothing else',
     'AI agent: Thank you for choosing Apna! Have a great day.',
     'User: nothing else',
     'AI agent: Thank you for choosing Apna! Have a great day.',
   ],
 });
 assert.match(duplicateClosing.audit.loop.reasons.join(' '), /Closing line sent again/);
+assert.match(duplicateClosing.audit.loop.reasons.join(' '), /\(x2\)/);
+assert.doesNotMatch(duplicateClosing.audit.flow_checks?.reasons.join(' ') || '', /Closed without asking/);
 
 const closedWithoutAsking = makeChat({
   parts: [

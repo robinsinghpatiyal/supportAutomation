@@ -90,15 +90,19 @@ function handoffIn(c, i, nextOnly) {
   const window = msgs.slice(i + 1, end);
   const agentMsg = window.some((m) => m.speaker === 'Agent');
   const line = window.some((m) => m.speaker === 'Bot' && BOT_LINES.handoff.test(m.text));
+  const rawHandoffCalls = (c.toolCalls || []).filter((call) => call.tool === 'agent_handoff');
+  const useRawCalls = rawHandoffCalls.length > 0;
   let tool = false;
-  msgs.forEach((m, k) => {
-    if (m.speaker !== 'User' || k < Math.max(i, 0) || (nextOnly && k !== i)) return;
-    const t = turnForUserMessage(c, k);
-    if (t && t.tools.some((x) => x.tool === 'agent_handoff')) tool = true;
-  });
-  const rawTool = (c.toolCalls || []).some((call) => call.tool === 'agent_handoff'
-    && (i < 0 || (nextOnly ? call.messageIndex === i : call.messageIndex >= i)));
-  tool = tool || rawTool;
+  if (useRawCalls) {
+    tool = rawHandoffCalls.some((call) =>
+      i < 0 || (nextOnly ? call.messageIndex === i : call.messageIndex >= i));
+  } else {
+    msgs.forEach((m, k) => {
+      if (m.speaker !== 'User' || k < Math.max(i, 0) || (nextOnly && k !== i)) return;
+      const t = turnForUserMessage(c, k);
+      if (t && t.tools.some((x) => x.tool === 'agent_handoff')) tool = true;
+    });
+  }
   const hasToolData = c.turns.length > 0 || (c.toolCalls || []).length > 0;
   const real = agentMsg || tool || (!nextOnly && i < 0 && (c.agentJoined === true || c.agentMessages > 0))
     || (!hasToolData && line);
@@ -112,9 +116,11 @@ function handoffIn(c, i, nextOnly) {
 }
 
 function handoffTriggers(c) {
-  const indices = new Set((c.toolCalls || [])
-    .filter((call) => call.tool === 'agent_handoff' && call.messageIndex >= 0)
-    .map((call) => call.messageIndex));
+  const rawCalls = (c.toolCalls || []).filter((call) => call.tool === 'agent_handoff');
+  if (rawCalls.length) {
+    return [...new Set(rawCalls.filter((call) => call.messageIndex >= 0).map((call) => call.messageIndex))];
+  }
+  const indices = new Set();
   c.messages.forEach((m, i) => {
     if (m.speaker !== 'User') return;
     const turn = turnForUserMessage(c, i);
@@ -129,7 +135,8 @@ function unresolvedReplyWindow(c, messageIndex) {
     call.tool === 'agent_handoff' && call.messageIndex === messageIndex);
   // BlueMachines raw calls are authoritative when present. Evaluator turns can
   // occasionally attach a later call to an earlier employer message.
-  const evaluatorTurn = c.toolCalls?.length ? null : turnForUserMessage(c, messageIndex);
+  const hasRawHandoffCalls = (c.toolCalls || []).some((call) => call.tool === 'agent_handoff');
+  const evaluatorTurn = hasRawHandoffCalls ? null : turnForUserMessage(c, messageIndex);
   const evaluatorCalls = (evaluatorTurn?.tools || []).filter((tool) => tool.tool === 'agent_handoff');
   const calls = rawCalls.length ? rawCalls : evaluatorCalls;
   const agent = messages.some((message) => message.speaker === 'Agent');
@@ -137,6 +144,23 @@ function unresolvedReplyWindow(c, messageIndex) {
   const supportClosed = messages.some((message) => message.speaker === 'Bot' && BOT_LINES.supportClosed.test(message.text))
     || calls.some((call) => /closed right now|reopens at|closed hours/i.test(String(call.output || call.result || '')));
   return { calls, agent, bot, supportClosed };
+}
+
+function lastBotBefore(messages, index) {
+  for (let i = index - 1; i >= 0; i--) {
+    if (messages[i].speaker === 'Bot') return messages[i];
+  }
+  return null;
+}
+
+function deduplicateReasons(reasons) {
+  const counts = new Map();
+  const order = [];
+  reasons.forEach((reason) => {
+    if (!counts.has(reason)) order.push(reason);
+    counts.set(reason, (counts.get(reason) || 0) + 1);
+  });
+  return order.map((reason) => counts.get(reason) > 1 ? `${reason} (x${counts.get(reason)})` : reason);
 }
 
 const HINDI_SET = new Set(HINDI_WORDS);
@@ -283,8 +307,8 @@ const RULES = {
     // Every employer message needs a visible reply, an agent response, or a handoff call.
     c.messages.forEach((m, i) => {
       if (m.speaker !== 'User') return;
-      const prior = c.messages[i - 1];
-      const allowedAfterClosing = prior?.speaker === 'Bot' && BOT_LINES.closing.test(prior.text)
+      const priorBot = lastBotBefore(c.messages, i);
+      const allowedAfterClosing = priorBot && BOT_LINES.closing.test(priorBot.text)
         && (NO_REPLY_AFTER_CLOSING.test(m.text) || EMOJI_ONLY.test(m.text));
       const replies = repliesAfter(c.messages, i);
       const handoff = handoffIn(c, i, true);
@@ -310,7 +334,15 @@ const RULES = {
       alert ||= 'Handoff requested, no agent joined';
     }
 
-    if (c.handoffStatus === 'said_only') {
+    const connectWithoutCall = c.messages.some((m, i) => {
+      if (m.speaker !== 'Bot' || !BOT_LINES.handoff.test(m.text)) return false;
+      let employerIndex = -1;
+      for (let k = i - 1; k >= 0; k--) {
+        if (c.messages[k].speaker === 'User') { employerIndex = k; break; }
+      }
+      return employerIndex >= 0 && handoffIn(c, employerIndex, true).saidOnly;
+    });
+    if (c.handoffStatus === 'said_only' || connectWithoutCall) {
       reasons.push('Connect line without a real handoff.');
       alert ||= 'Connect line without a real handoff';
     }
@@ -323,7 +355,8 @@ const RULES = {
       for (let k = i - 2; k >= 0; k--) {
         if (c.messages[k].speaker === 'Bot') { previousBot = c.messages[k]; break; }
       }
-      if (previousBot && !BOT_LINES.resolveQuestion.test(previousBot.text) && !BOT_LINES.supportEmail.test(previousBot.text)) {
+      if (previousBot && !BOT_LINES.closing.test(previousBot.text)
+        && !BOT_LINES.resolveQuestion.test(previousBot.text) && !BOT_LINES.supportEmail.test(previousBot.text)) {
         reasons.push('Closed without asking: the closing line followed an acknowledgement without a resolve question.');
       }
     });
@@ -355,7 +388,10 @@ export function runAudit(conversations, escalations = {}) {
     c.audit = {};
     for (const cat of CATEGORIES) {
       const r = RULES[cat.key](c, escalations);
-      if (r) c.audit[cat.key] = r;
+      if (r) {
+        r.reasons = deduplicateReasons(r.reasons);
+        c.audit[cat.key] = r;
+      }
     }
     c.categories = Object.keys(c.audit);
     c.alerts = Object.values(c.audit).map((r) => r.alert).filter(Boolean);

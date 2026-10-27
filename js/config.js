@@ -64,19 +64,17 @@ export const BOT_LINES = {
   salesAnswer: /thank you! our sales team will reach out to you within 24 hours|your request is already with our sales team/i,
   supportEmail: /employersupport@apna\.co/i,
   hold: /support team will join this chat shortly|support team jald hi is chat/i,
-  // a handoff was made or tried (connect lines, hold line, support-hours lines)
-  handoff: new RegExp([
-    'connect you (with|to) our (human agent|support team|support agent)',
+  // A connection is happening now. Offers ("I can connect", "Would you like") are not connect lines.
+  handoff: new RegExp(`^(?![\\s\\S]*\\?\\s*$)[\\s\\S]*(?:${[
+    'let me connect you (with|to) our (human agent|support team|support agent)',
+    "i(?:'ll| will) connect you (with|to) our (human agent|support team|support agent)",
     'connecting you to our support team',
     'while i connect you',
     'support team will join this chat',
-    'support agent se connect',
     'support team jald hi',
-    'chat support team is available from',
-    'available from 9:00 am to 7:00 pm',
-    'currently offline',
-    'abhi offline hai',
-  ].join('|'), 'i'),
+    'support agent se connect kiya ja raha hai',
+    'support team se connect kiya ja raha hai',
+  ].join('|')})`, 'i'),
   supportClosed: /chat support team is available from|currently offline|abhi offline hai|subah 9:00 am se shaam 7:00 pm/i,
 };
 
@@ -85,7 +83,7 @@ export const ANSWER_YES = /^\s*(yes|yeah|yep|haan|han|ha|haa|ji|ji haan|ok|okay|
 export const ANSWER_NO = /^\s*(?!(?:no help required|no help needed|no more help|no need)\b)(no|nope|nahi|nahin|nhi|nai|ni|na|not really|not resolved|still not|abhi bhi nahi|nahi hua|nhi hua)\b/i;
 
 export const ACKNOWLEDGEMENT = /^\s*(ok|okay|okk|k|sure|thanks|thank you|thankyou|thx|got it|nothing|nothing else)\b/i;
-export const NO_REPLY_AFTER_CLOSING = /^\s*(ok|k|ko|thanks|bye|yes|no|done|nothing|nothing else|no help required|no more help|can you close)[.!]*\s*$/i;
+export const NO_REPLY_AFTER_CLOSING = /^\s*(ok|okay|okk|k|ko|thanks|thank you|thankyou|thx|bye|bye bye|yes|no|no thanks|done|nothing|nothing else|no help required|no more help|can you close|theek hai|thik hai|shukriya|dhanyavaad|ji)[.!]*\s*$/i;
 export const EMOJI_ONLY = /^\s*(?:\p{Extended_Pictographic}|\p{Emoji_Presentation}|\uFE0F|\u200D)+\s*$/u;
 export const GREETING_ONLY = /^\s*(hi|hai|hii)\s*[!.]*\s*$/i;
 
