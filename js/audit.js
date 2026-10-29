@@ -3,7 +3,8 @@
 
 import {
   THRESHOLDS, FRUSTRATION_TERMS, AGENT_REQUEST_TERMS, BOT_LINES, LOOP_TAGS, CATEGORIES,
-  ACKNOWLEDGEMENT, NO_REPLY_AFTER_CLOSING, EMOJI_ONLY, GREETING_ONLY, HINDI_WORDS,
+  ACKNOWLEDGEMENT, NO_REPLY_AFTER_CLOSING, EMOJI_ONLY, GREETING_ONLY, EMPLOYER_HINDI_WORDS, BOT_HINDI_WORDS,
+  ATTACHMENT_ONLY,
 } from './config.js';
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -163,10 +164,22 @@ function deduplicateReasons(reasons) {
   return order.map((reason) => counts.get(reason) > 1 ? `${reason} (x${counts.get(reason)})` : reason);
 }
 
-const HINDI_SET = new Set(HINDI_WORDS);
+const EMPLOYER_HINDI_SET = new Set(EMPLOYER_HINDI_WORDS);
+const BOT_HINDI_SET = new Set(BOT_HINDI_WORDS);
 const wordsIn = (text) => String(text || '').toLowerCase().match(/[a-z]+/g) || [];
-const hindiWordsIn = (text) => new Set(wordsIn(text).filter((word) => HINDI_SET.has(word)));
+const hasDevanagari = (text) => /[ऀ-ॿ]/.test(String(text || ''));
 const onlyNumberLinkOrId = (text) => /^\s*(?:\d+|https?:\/\/\S+|www\.\S+|[a-f\d]{12,}|[a-z]*\d[\w-]*)\s*$/i.test(text);
+// Same reading as the bot prompt: Devanagari or a clear Hindi word makes an employer message Hinglish
+const employerIsHinglish = (text) => hasDevanagari(text) || wordsIn(text).some((word) => EMPLOYER_HINDI_SET.has(word));
+const botIsHinglish = (text) => hasDevanagari(text) || new Set(wordsIn(text).filter((word) => BOT_HINDI_SET.has(word))).size >= 2;
+// "ok", "ye", "haan ji", "?", an emoji, a number or an attachment: keeps the language of the bot's previous reply
+const isShortReply = (text) => ATTACHMENT_ONLY.test(text) || EMOJI_ONLY.test(text) || wordsIn(text).length <= 2;
+const asksForLanguage = (text) => /\b(hindi|english|angrezi)\b/i.test(String(text || ''));
+// Lines that are not the bot answering in a language of its choice
+const isAutomaticLine = (text) => BOT_LINES.welcome.test(text) || BOT_LINES.handback.test(text);
+// Lines the bot may repeat on purpose (waiting for an agent, support closed, handoff failed)
+const isAllowedRepeat = (text) => BOT_LINES.hold.test(text) || BOT_LINES.holdLong.test(text)
+  || BOT_LINES.supportClosed.test(text) || BOT_LINES.handoffFailed.test(text) || BOT_LINES.handback.test(text);
 
 const RULES = {
   eval_flagged(c) {
@@ -204,7 +217,7 @@ const RULES = {
     const reasons = [];
     const bot = c.messages
       .map((m, index) => ({ ...m, index }))
-      .filter((m) => m.speaker === 'Bot' && !BOT_LINES.welcome.test(m.text) && !BOT_LINES.hold.test(m.text) && m.text);
+      .filter((m) => m.speaker === 'Bot' && !BOT_LINES.welcome.test(m.text) && !isAllowedRepeat(m.text) && m.text);
     for (let k = 1; k < bot.length; k++) {
       if (BOT_LINES.closing.test(bot[k - 1].text) && BOT_LINES.closing.test(bot[k].text)) {
         reasons.push('Closing line sent again.');
@@ -231,8 +244,12 @@ const RULES = {
       if (!words.length) return;
       const next = handoffIn(c, i, true);
       const later = next.real ? null : handoffIn(c, i, false);
+      // A call about plans, prices or offers goes to Sales as a lead, not to support
+      const salesLead = !next.real && repliesAfter(c.messages, i)
+        .some((reply) => reply.speaker === 'Bot' && BOT_LINES.salesAnswer.test(reply.text));
       let status;
-      if (next.real) status = 'Handed off in the next reply';
+      if (salesLead) status = 'Sent to the Sales team as a lead (a call about plans)';
+      else if (next.real) status = 'Handed off in the next reply';
       else if (next.saidOnly) { status = 'The next reply said it would connect, but no handoff was made'; alert = alert || 'Connect line without a real handoff'; }
       else if (later.real) { status = 'Handed off, but not in the next reply'; alert = alert || 'Handoff was delayed'; }
       else { status = 'Never handed off'; alert = alert || 'Request for a human was not handed off'; }
@@ -361,15 +378,52 @@ const RULES = {
       }
     });
 
+    // Language, read the way the bot prompt reads it:
+    // - a message with Devanagari or a clear Hindi word gets Hinglish, any other full message gets English;
+    // - a short reply ("ok", "ye", "?", an attachment) keeps the language the chat was in;
+    // - "speak in Hindi" means Hinglish for the rest of the chat, "English please" means English.
+    let forced = null; // 'hinglish' | 'english' after the employer asked for a language
+    let lastFull = null; // language of the employer's last full message
     c.messages.forEach((m, i) => {
-      if (m.speaker !== 'User' || wordsIn(m.text).length < 3 || GREETING_ONLY.test(m.text) || onlyNumberLinkOrId(m.text)) return;
+      if (m.speaker !== 'User') return;
+      if (asksForLanguage(m.text)) {
+        const t = m.text.toLowerCase();
+        forced = /english|angrezi/.test(t) || /(not|dont|don't|no|nahi|nhi)\b[^.]*hindi|hindi[^.]*\b(nahi|nhi|not)\b/.test(t) ? 'english' : 'hinglish';
+        return;
+      }
+      if (GREETING_ONLY.test(m.text) || onlyNumberLinkOrId(m.text)) return;
+      const short = isShortReply(m.text);
+      const own = short ? null : (employerIsHinglish(m.text) ? 'hinglish' : 'english');
+      if (own) lastFull = own;
       const reply = repliesAfter(c.messages, i).find((next) => next.speaker === 'Bot');
-      if (!reply || BOT_LINES.welcome.test(reply.text)) return;
-      const employerHinglish = hindiWordsIn(m.text).size >= 1;
-      const botHinglish = hindiWordsIn(reply.text).size >= 2;
-      if (!employerHinglish && botHinglish) {
+      if (!reply || isAutomaticLine(reply.text)) return;
+
+      const resolveLine = BOT_LINES.resolveQuestion.exec(reply.text);
+      const body = reply.text.replace(BOT_LINES.resolveQuestion, ' ').trim();
+      const bodyHinglish = botIsHinglish(wordsIn(body).length >= 3 ? body : reply.text);
+      if (resolveLine && wordsIn(body).length >= 4 && /kya/i.test(resolveLine[0]) !== bodyHinglish) {
+        reasons.push(`English and Hinglish mixed in one reply: "${snip(reply.text)}"`);
+      }
+      const got = bodyHinglish ? 'hinglish' : 'english';
+
+      let expected = forced || own;
+      if (!expected) {
+        // short reply: the chat's language so far, else the bot's previous reply
+        expected = lastFull;
+        if (!expected) {
+          for (let k = i - 1; k >= 0; k--) {
+            const msg = c.messages[k];
+            if (msg.speaker === 'Bot' && !isAutomaticLine(msg.text)) { expected = botIsHinglish(msg.text) ? 'hinglish' : 'english'; break; }
+          }
+        }
+        if (expected && expected !== got) {
+          reasons.push(`Short reply switched the language to ${got === 'hinglish' ? 'Hinglish' : 'English'}: "${snip(m.text)}" → "${snip(reply.text)}"`);
+        }
+        return;
+      }
+      if (expected === 'english' && got === 'hinglish') {
         reasons.push(`English message answered in Hinglish: "${snip(m.text)}" → "${snip(reply.text)}"`);
-      } else if (employerHinglish && !botHinglish) {
+      } else if (expected === 'hinglish' && got === 'english') {
         reasons.push(`Hinglish message answered in English: "${snip(m.text)}" → "${snip(reply.text)}"`);
       }
     });

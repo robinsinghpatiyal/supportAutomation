@@ -25,7 +25,7 @@ export const TEST_CONVERSATION_PATTERNS = [/^bm_dummy/i, /^test/i];
 export const TEST_USER_IDS = new Set([
   '58278958', '55831297', '65906147', '18131429', '57999454', '33840438',
   '65951096', '62964442', '39317100', '11532763', '47951860', '10407313',
-  '22717143', '64661331', '53980663', '62203798', '66296336', '58106048',
+  '22717143', '64661331', '53980663', '62203798', '66296336', '58106048', '66202126',
 ]);
 
 // Frustration & Negative Sentiment: words or phrases in the EMPLOYER's messages.
@@ -76,7 +76,15 @@ export const BOT_LINES = {
     'support team se connect kiya ja raha hai',
   ].join('|')})`, 'i'),
   supportClosed: /chat support team is available from|currently offline|abhi offline hai|subah 9:00 am se shaam 7:00 pm/i,
+  // BlueMachines' automatic message after a human agent hands the chat back (not written by the bot)
+  handback: /hope the support team has resolved your queries/i,
+  // Lines the bot is allowed to repeat (never a loop)
+  holdLong: /taking longer than usual to join|judne mein usual se zyada samay/i,
+  handoffFailed: /couldn't connect you to our support team right now|connect nahi kiya ja saka/i,
 };
+
+// An employer message that is only an attachment marker
+export const ATTACHMENT_ONLY = /^\s*(?:\[attached (?:image|file)[^\]]*\]\s*)+$/i;
 
 // Employer replies to "Did this resolve your query?"
 export const ANSWER_YES = /^\s*(yes|yeah|yep|haan|han|ha|haa|ji|ji haan|ok|okay|okk|k|sure|got it|thanks|thank you|thankyou|thx|resolved|done|solved|nothing|nothing else|no help required|no help needed|no more help|no need|ho gaya|hogaya|theek hai|thik hai|sahi hai)\b/i;
@@ -87,10 +95,24 @@ export const NO_REPLY_AFTER_CLOSING = /^\s*(ok|okay|okk|k|ko|thanks|thank you|th
 export const EMOJI_ONLY = /^\s*(?:\p{Extended_Pictographic}|\p{Emoji_Presentation}|\uFE0F|\u200D)+\s*$/u;
 export const GREETING_ONLY = /^\s*(hi|hai|hii)\s*[!.]*\s*$/i;
 
-export const HINDI_WORDS = [
-  'nhi', 'nahi', 'nai', 'h', 'hai', 'kya', 'kyu', 'kaise', 'kab', 'kitna', 'mera', 'meri',
-  'mujhe', 'aap', 'karo', 'kro', 'kar', 'btao', 'batao', 'ho', 'hua', 'rha', 'rahe', 'abhi',
-  'jaldi', 'thik', 'acha', 'bhai', 'ji', 'kuch', 'koi', 'bhi', 'se', 'ka', 'ke', 'ki', 'ko',
+// Words that make an EMPLOYER message Hinglish (same list as the bot prompt's LANGUAGE rule).
+// Short words that also appear in English typos and names (h, ho, se, ka, ke, ki, ko, ji, bhi,
+// ye, to, na, bhai, acha, thik) never decide it on their own, so they are not here.
+export const EMPLOYER_HINDI_WORDS = [
+  'nhi', 'nahi', 'nai', 'hai', 'kya', 'kyu', 'kaise', 'kab', 'kitna', 'kitne', 'mera', 'meri',
+  'mujhe', 'aap', 'karo', 'kro', 'kar', 'karna', 'btao', 'batao', 'hua', 'hoga', 'rha', 'rahe',
+  'abhi', 'jaldi', 'kuch', 'koi', 'chahiye',
+  // common spellings of the same words
+  'nahin', 'hain', 'kyun', 'kyon', 'kese', 'kaisa', 'kaha', 'kahan', 'kitni', 'mere', 'mujko', 'humko',
+  'kare', 'karu', 'karun', 'krna', 'krni', 'karni', 'karke', 'gaya', 'gayi', 'hogi', 'raha', 'rahi',
+  'tha', 'thi', 'wala', 'wali', 'wale', 'bhejo', 'dikhao', 'dikh', 'chahte', 'sakta', 'sakte', 'paisa', 'paise',
+];
+
+// Words that show a BOT reply is in Hinglish (two or more distinct ones needed)
+export const BOT_HINDI_WORDS = [
+  ...EMPLOYER_HINDI_WORDS, 'aapka', 'aapke', 'aapko', 'aapki', 'karein', 'kijiye', 'kholiye', 'mein',
+  'liye', 'baare', 'batayein', 'hamari', 'hamare', 'apni', 'apne', 'par', 'jaakar', 'baad', 'yeh', 'woh',
+  'aur', 'ya', 'kripya', 'dhanyavaad', 'shukriya', 'sakti', 'ho', 'se', 'ka', 'ke', 'ki', 'ko',
 ];
 
 // Evaluator tags that mean the bot repeated itself or looped
@@ -149,7 +171,7 @@ export const CATEGORIES = [
   {
     key: 'flow_checks',
     name: 'Chat Flow & Handoff Checks',
-    rule: 'Checks missing replies, incomplete or fake handoffs, premature closing, and English/Hinglish reply mismatches.',
+    rule: 'Checks missing replies, incomplete or fake handoffs, premature closing, English/Hinglish reply mismatches, and short replies ("ok", "ye", "?", an attachment) that switched the chat\'s language.',
     objective: 'Catch broken conversation flow and handoff behaviour that other outcome-based queues miss.',
   },
 ];

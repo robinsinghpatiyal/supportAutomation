@@ -199,4 +199,94 @@ const languageMismatch = makeChat({
 });
 assert.match(languageMismatch.audit.flow_checks.reasons.join(' '), /English message answered in Hinglish/);
 
+// Short words such as "ji" or "h" do not make a message Hinglish
+const tinyHindiWord = makeChat({
+  parts: [
+    'User: ok ji please check my job',
+    'AI agent: Which job would you like me to check? Please share the job title.',
+  ],
+});
+assert.doesNotMatch(tinyHindiWord.audit.flow_checks?.reasons.join(' ') || '', /answered in/);
+
+// Devanagari makes a message Hinglish
+const devanagari = makeChat({
+  parts: [
+    'User: Apna app खोला उसके bad kya karna hai',
+    'AI agent: Open your profile and click View Profile.',
+  ],
+});
+assert.match(devanagari.audit.flow_checks.reasons.join(' '), /Hinglish message answered in English/);
+
+// A short reply keeps the language of the previous bot reply
+const shortSwitch = makeChat({
+  parts: [
+    'User: why is my job not live',
+    'AI agent: Your job is not live yet because a plan has not been selected for it.\n\nDid this resolve your query?',
+    'User: ye',
+    'AI agent: Apna chunne ke liye dhanyavaad! Aapka din shubh ho. Aur kisi madad ki zarurat ho to batayein.',
+  ],
+});
+assert.match(shortSwitch.audit.flow_checks.reasons.join(' '), /Short reply switched the language to Hinglish/);
+
+// The Hinglish resolve question on its own is Hinglish; an English answer ending with it is mixed
+const resolveOnly = makeChat({
+  parts: [
+    'User: free job post krni h',
+    'AI agent: Free job post ki suvidha nahi hai, aap View Plans se plan kharid sakte hain.',
+    'User: ok tnkuu',
+    'AI agent: Kya isse aapki query solve hui?',
+  ],
+});
+assert.doesNotMatch(resolveOnly.audit.flow_checks?.reasons.join(' ') || '', /Short reply|answered in/);
+const mixed = makeChat({
+  parts: [
+    'User: can we post work from home jobs on the monthly plan',
+    'AI agent: Work From Home jobs are not supported on apna Unlimited.\n\nKya isse aapki query solve hui?',
+  ],
+});
+assert.match(mixed.audit.flow_checks.reasons.join(' '), /mixed in one reply/);
+
+// After "please speak in hindi", replies stay in Hinglish
+const hindiRequested = makeChat({
+  parts: [
+    'User: please speak in hindi',
+    'AI agent: Zaroor! Bataiye, aaj main aapki kya madad karun?',
+    'User: why is my job not live',
+    'AI agent: Aapki job abhi live nahi hai kyunki plan select nahi hua hai.',
+  ],
+});
+assert.doesNotMatch(hindiRequested.audit.flow_checks?.reasons.join(' ') || '', /answered in/);
+
+// BlueMachines' handback message is not graded as a bot reply
+const handback = makeChat({
+  parts: [
+    'User: Sir ji mere se buy mistek premium job post ho gai hai',
+    'AI agent: Hope the support team has resolved your queries. I can continue to help you from here',
+  ],
+});
+assert.doesNotMatch(handback.audit.flow_checks?.reasons.join(' ') || '', /answered in/);
+
+// A call about plans that gets a Sales lead is not a missed handoff
+const salesCall = makeChat({
+  parts: [
+    'User: please call me about the plans',
+    'AI agent: Thank you! Our sales team will reach out to you within 24 hours.',
+  ],
+});
+assert.match(salesCall.audit.agent_request.reasons.join(' '), /Sent to the Sales team/);
+assert.equal(salesCall.audit.agent_request.alert, null);
+
+// The failed-handoff line may repeat without counting as a loop
+const failedTwice = makeChat({
+  parts: [
+    'User: connect me to an agent',
+    toolBlock('Human support could not be reached', 1000),
+    "AI agent: Sorry, I couldn't connect you to our support team right now. Please email us at employersupport@apna.co and the team will get back to you.",
+    'User: connect me to an agent please',
+    toolBlock('Human support could not be reached', 1000),
+    "AI agent: Sorry, I couldn't connect you to our support team right now. Please email us at employersupport@apna.co and the team will get back to you.",
+  ],
+});
+assert.equal(failedTwice.audit.loop, undefined);
+
 console.log('All synthetic handoff and flow-rule tests passed.');

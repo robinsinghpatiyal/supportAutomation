@@ -61,13 +61,13 @@ It understands both record shapes in the collection:
 |---|---|---|
 | Eval Bot Flagged | Evaluator set `flag_for_review`, or the chat or any turn scored 2/5 or lower | System anomalies, factual errors, low-confidence answers |
 | Frustration & Negative Sentiment | Employer used a frustration, abuse, legal or social-media word (English or Hinglish), typed `!!`/`???` or all caps, or the evaluator rated end sentiment negative | Pain points, tone, broken experience |
-| Repetitive Answers & Loops | Two consecutive bot replies ≥ 85% similar, the closing line is sent twice in succession, or the evaluator reports a loop | Dead ends where the bot does not progress |
-| Human Agent Requests | Employer asked for a human, agent, call or support team. **⚠** when the next reply did not hand off, or only *said* it would connect with no handoff call | Escalation recognised immediately |
+| Repetitive Answers & Loops | Two consecutive bot replies ≥ 85% similar, the closing line is sent twice in succession, or the evaluator reports a loop. Lines the bot may repeat on purpose (waiting for an agent, support closed, handoff failed, the platform's handback message) are not counted | Dead ends where the bot does not progress |
+| Human Agent Requests | Employer asked for a human, agent, call or support team. **⚠** when the next reply did not hand off, or only *said* it would connect with no handoff call. A call about plans answered with the Sales lead line is correct (it goes to Sales, not support) | Escalation recognised immediately |
 | Unresolved Queries (Resolve = No) | Employer said no to "Did this resolve your query?", CSAT no, or evaluator outcome `unresolved`. A no must hand off in the very next reply | Handoff integrity |
 | Early Drop-off | Employer left after ≥ 3 bot replies (welcome not counted) and ≤ 5 messages of their own, last message from the bot, no resolution, no handoff | Answers too long, irrelevant or unhelpful |
 | High-Volume Abandonment | Employer sent > 5 messages, no resolution, no handoff | Complex queries the bot could not solve |
 | Support Team Escalations | Marked in the app (detail page) or imported from a CSV with a `conversation_id` column (optional `note`, `by`) | Issues reported by the support team |
-| Chat Flow & Handoff Checks | Missing replies, handoff calls with no reply, requested handoffs with no agent during support hours, fake connect lines, premature closing, and English/Hinglish mismatch | Broken flow and operational handoff failures |
+| Chat Flow & Handoff Checks | Missing replies, handoff calls with no reply, requested handoffs with no agent during support hours, fake connect lines, premature closing, and language: a message with Devanagari or a clear Hindi word should get Hinglish and any other full message English (short words such as "ji" or "h" do not count), a short reply ("ok", "ye", "?", an attachment) keeps the chat's language, "speak in Hindi" or "English please" holds for the rest of the chat, and one reply never mixes both | Broken flow and operational handoff failures |
 
 "Resolution" means the employer answered the resolve question with yes or an accepted equivalent (including "nothing", "nothing else", "no help required" or "no more help"), the closing line was sent, or CSAT was yes. A no must be followed by a handoff in the next reply.
 
