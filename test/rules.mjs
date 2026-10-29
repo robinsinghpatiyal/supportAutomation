@@ -12,6 +12,11 @@ function toolBlock(output, latencyMs = 100000) {
   return `[Tool: agent_handoff]\n${JSON.stringify({ details, metrics: [`Latency: ${latencyMs}ms`] })}`;
 }
 
+function queryBlock(intent, text) {
+  const details = { 'Tool name': 'apna_chat_query', 'Tool input': JSON.stringify([{ body: { intent, message: { text } } }]), Output: '{}' };
+  return `[Tool: apna_chat_query]\n${JSON.stringify({ details, metrics: ['Latency: 300ms'] })}`;
+}
+
 function transcript(parts, variables = {}) {
   const inputVariables = JSON.stringify(variables);
   return [
@@ -288,5 +293,34 @@ const failedTwice = makeChat({
   ],
 });
 assert.equal(failedTwice.audit.loop, undefined);
+
+// "Which plan should I take" must make the Sales lead in the same turn
+const PLAN_ANSWER = 'AI agent: The right plan depends on your hiring needs.\n\nIf you hire regularly, our apna Unlimited subscription is a good fit.\n\nWould you like me to connect you with our Sales Team to find the best plan for your requirement?';
+const whichPlanNoLead = makeChat({
+  parts: ['User: which plan should I take', queryBlock('GET_CREDITS', 'which plan should I take'), PLAN_ANSWER],
+});
+assert.match(whichPlanNoLead.audit.flow_checks.reasons.join(' '), /Which-plan answer with no Sales lead/);
+assert.equal(whichPlanNoLead.audit.flow_checks.alert, 'Sales lead missing');
+const whichPlanLead = makeChat({
+  parts: ['User: which plan should I take', queryBlock('CREATE_LEAD', 'which plan should I take'), PLAN_ANSWER],
+});
+assert.doesNotMatch(whichPlanLead.audit.flow_checks?.reasons.join(' ') || '', /Sales lead/);
+
+// A yes to the Sales Team question needs a lead, unless one was made earlier in the chat
+const yesNoLead = makeChat({
+  parts: [
+    'User: how many credits do I have',
+    queryBlock('GET_CREDITS', 'how many credits do I have'),
+    'AI agent: You have 0 job posting credits and 0 database credits.\n\nYou can buy plans under View Plans on your dashboard. Would you like me to connect you with our Sales Team for custom packages or current discounts?',
+    'User: yes',
+    'AI agent: Thank you! Our sales team will reach out to you within 24 hours.',
+  ],
+});
+assert.match(yesNoLead.audit.flow_checks.reasons.join(' '), /Yes to the Sales offer, but no lead was created/);
+const yesAfterLead = makeChat({
+  parts: ['User: which plan should I take', queryBlock('CREATE_LEAD', 'which plan should I take'), PLAN_ANSWER,
+    'User: yes', 'AI agent: Thank you! Our sales team will reach out to you within 24 hours.'],
+});
+assert.doesNotMatch(yesAfterLead.audit.flow_checks?.reasons.join(' ') || '', /Sales lead|no lead/);
 
 console.log('All synthetic handoff and flow-rule tests passed.');

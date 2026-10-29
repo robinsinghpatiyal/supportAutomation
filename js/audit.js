@@ -4,7 +4,7 @@
 import {
   THRESHOLDS, FRUSTRATION_TERMS, AGENT_REQUEST_TERMS, BOT_LINES, LOOP_TAGS, CATEGORIES,
   ACKNOWLEDGEMENT, NO_REPLY_AFTER_CLOSING, EMOJI_ONLY, GREETING_ONLY, EMPLOYER_HINDI_WORDS, BOT_HINDI_WORDS,
-  ATTACHMENT_ONLY,
+  ATTACHMENT_ONLY, SALES_YES,
 } from './config.js';
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -114,6 +114,23 @@ function handoffIn(c, i, nextOnly) {
     agent: agentMsg,
     replied: window.some((m) => m.speaker === 'Bot' || m.speaker === 'Agent'),
   };
+}
+
+// Was a Sales lead (CREATE_LEAD) made for the employer's message at index i, or earlier in the chat?
+// Returns null when the export has no tool data to tell.
+function leadMadeBy(c, i) {
+  const raw = (c.toolCalls || []).filter((call) => call.tool === 'apna_chat_query');
+  if (raw.length) {
+    return raw.some((call) => call.messageIndex <= i && /CREATE_LEAD/.test(String(call.input || '')));
+  }
+  if (!c.turns.length) return null;
+  let made = false;
+  c.messages.forEach((m, k) => {
+    if (m.speaker !== 'User' || k > i) return;
+    const t = turnForUserMessage(c, k);
+    if (t && t.tools.some((x) => x.intent === 'CREATE_LEAD')) made = true;
+  });
+  return made;
 }
 
 function handoffTriggers(c) {
@@ -375,6 +392,23 @@ const RULES = {
       if (previousBot && !BOT_LINES.closing.test(previousBot.text)
         && !BOT_LINES.resolveQuestion.test(previousBot.text) && !BOT_LINES.supportEmail.test(previousBot.text)) {
         reasons.push('Closed without asking: the closing line followed an acknowledgement without a resolve question.');
+      }
+    });
+
+    // Sales leads: "which plan should I take" makes the lead in the same turn, and a yes to the
+    // Sales Team question makes it unless one was made earlier in the chat.
+    c.messages.forEach((m, i) => {
+      if (m.speaker !== 'User') return;
+      const reply = repliesAfter(c.messages, i).find((next) => next.speaker === 'Bot');
+      const previous = lastBotBefore(c.messages, i);
+      const whichPlan = reply && BOT_LINES.whichPlan.test(reply.text);
+      const yesToSales = previous && BOT_LINES.salesOffer.test(previous.text) && SALES_YES.test(m.text);
+      if (!whichPlan && !yesToSales) return;
+      if (leadMadeBy(c, i) === false) {
+        reasons.push(whichPlan
+          ? `Which-plan answer with no Sales lead: "${snip(m.text)}"`
+          : `Yes to the Sales offer, but no lead was created: "${snip(m.text)}"`);
+        alert ||= 'Sales lead missing';
       }
     });
 

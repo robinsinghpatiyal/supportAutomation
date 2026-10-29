@@ -81,7 +81,14 @@ export const BOT_LINES = {
   // Lines the bot is allowed to repeat (never a loop)
   holdLong: /taking longer than usual to join|judne mein usual se zyada samay/i,
   handoffFailed: /couldn't connect you to our support team right now|connect nahi kiya ja saka/i,
+  // The Sales Team question ends a reply that offers Sales help; a yes to it must create a lead
+  salesOffer: /connect you with our sales team|sales team se (connect|baat)/i,
+  // "Which plan should I take" answer: the lead is created in the same turn
+  whichPlan: /the right plan depends on your hiring needs/i,
 };
+
+// An employer's agreement to the Sales Team question
+export const SALES_YES = /^\s*(yes|yeah|yep|yup|haan|han|ha|haa|ji|ji haan|ok|okay|okk|sure|please|go ahead|theek hai|thik hai|call me)\b/i;
 
 // An employer message that is only an attachment marker
 export const ATTACHMENT_ONLY = /^\s*(?:\[attached (?:image|file)[^\]]*\]\s*)+$/i;
@@ -171,7 +178,7 @@ export const CATEGORIES = [
   {
     key: 'flow_checks',
     name: 'Chat Flow & Handoff Checks',
-    rule: 'Checks missing replies, incomplete or fake handoffs, premature closing, English/Hinglish reply mismatches, and short replies ("ok", "ye", "?", an attachment) that switched the chat\'s language.',
+    rule: 'Checks missing replies, incomplete or fake handoffs, premature closing, English/Hinglish reply mismatches, short replies ("ok", "ye", "?", an attachment) that switched the chat\'s language, and Sales leads missing after "which plan should I take" or a yes to the Sales Team question.',
     objective: 'Catch broken conversation flow and handoff behaviour that other outcome-based queues miss.',
   },
 ];
