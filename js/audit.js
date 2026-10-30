@@ -4,7 +4,7 @@
 import {
   THRESHOLDS, FRUSTRATION_TERMS, AGENT_REQUEST_TERMS, BOT_LINES, LOOP_TAGS, CATEGORIES,
   ACKNOWLEDGEMENT, NO_REPLY_AFTER_CLOSING, EMOJI_ONLY, GREETING_ONLY, EMPLOYER_HINDI_WORDS, BOT_HINDI_WORDS,
-  ATTACHMENT_ONLY, SALES_YES,
+  ATTACHMENT_ONLY, SALES_YES, TEAM_SALUTATION,
 } from './config.js';
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -257,7 +257,7 @@ const RULES = {
     let alert = null;
     c.messages.forEach((m, i) => {
       if (m.speaker !== 'User') return;
-      const words = matches(AGENT_RE, m.text);
+      const words = matches(AGENT_RE, String(m.text || '').replace(TEAM_SALUTATION, ''));
       if (!words.length) return;
       const next = handoffIn(c, i, true);
       const later = next.real ? null : handoffIn(c, i, false);

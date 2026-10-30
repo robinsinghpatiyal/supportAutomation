@@ -323,4 +323,20 @@ const yesAfterLead = makeChat({
 });
 assert.doesNotMatch(yesAfterLead.audit.flow_checks?.reasons.join(' ') || '', /Sales lead|no lead/);
 
+// "Dear Apna Support Team," at the start of an email is a greeting, not a request for a person
+const emailGreeting = makeChat({
+  parts: [
+    'User: Dear Apna Support Team,\n\nCould you please confirm whether we can use the remaining Database Credits after the subscription expires?\n\nThank you.',
+    'AI agent: Here is when your credits expire:\n- 112 Database Credits on 11 Jan 2027',
+  ],
+});
+assert.equal(emailGreeting.audit.agent_request ?? null, null);
+const greetingThenAsk = makeChat({
+  parts: [
+    'User: Hi support team, please connect me to an agent',
+    'AI agent: Here is when your credits expire:\n- 112 Database Credits on 11 Jan 2027',
+  ],
+});
+assert.match(greetingThenAsk.audit.agent_request.reasons.join(' '), /connect me|agent/);
+
 console.log('All synthetic handoff and flow-rule tests passed.');

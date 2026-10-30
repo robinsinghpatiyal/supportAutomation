@@ -56,6 +56,10 @@ export const AGENT_REQUEST_TERMS = [
   /(?<!\b(?:delivery|sales|field|insurance|travel|collection|recovery|booking|leasing|placement|estate|service|centre|center|marketing|ticketing|courier|loan|bank)\s)\bagents?\b/i,
 ];
 
+// A greeting that names the team ("Dear Apna Support Team,", "Hi support team") is not a request
+// for a person. It is removed from the start of each line before the request terms are checked.
+export const TEAM_SALUTATION = /^\s*(?:dear|hi|hello|hey|respected)\s+(?:[\w.&]+\s+){0,3}team\b[\s,:;.!-]*/gim;
+
 // Fixed bot lines (English and the approved Hinglish versions), used to read the transcript.
 export const BOT_LINES = {
   welcome: /welcome to apna support/i,
