@@ -12,8 +12,8 @@ function toolBlock(output, latencyMs = 100000) {
   return `[Tool: agent_handoff]\n${JSON.stringify({ details, metrics: [`Latency: ${latencyMs}ms`] })}`;
 }
 
-function queryBlock(intent, text) {
-  const details = { 'Tool name': 'apna_chat_query', 'Tool input': JSON.stringify([{ body: { intent, message: { text } } }]), Output: '{}' };
+function queryBlock(intent, text, output = '{}') {
+  const details = { 'Tool name': 'apna_chat_query', 'Tool input': JSON.stringify([{ body: { intent, message: { text } } }]), Output: output };
   return `[Tool: apna_chat_query]\n${JSON.stringify({ details, metrics: ['Latency: 300ms'] })}`;
 }
 
@@ -338,5 +338,18 @@ const greetingThenAsk = makeChat({
   ],
 });
 assert.match(greetingThenAsk.audit.agent_request.reasons.join(' '), /connect me|agent/);
+
+// A review under way for more than 30 minutes must not get the 30-minute answer (chat starts 11:30 AM IST)
+const reviewOutput = (since) => JSON.stringify({ intent: 'GET_JOB_STATUS', context: { job: { status: 'under_review', under_review_since: since, verification: { verification_status: 'COMPLETED', pending_steps: [] } } } });
+const THIRTY = 'AI agent: Your documents are uploaded and our team is reviewing them. This usually takes around 30 minutes, and your job will go live once verified. No action is needed from you.';
+const delayedReview = makeChat({
+  parts: ['User: why is my job not live', queryBlock('GET_JOB_STATUS', 'why is my job not live', reviewOutput('15 Oct 2026, 09:00 AM IST')), THIRTY],
+});
+assert.match(delayedReview.audit.flow_checks.reasons.join(' '), /30-minute answer for a review under way for 2 hours/);
+assert.equal(delayedReview.audit.flow_checks.alert, 'Delayed review not handed off');
+const freshReview = makeChat({
+  parts: ['User: why is my job not live', queryBlock('GET_JOB_STATUS', 'why is my job not live', reviewOutput('15 Oct 2026, 11:10 AM IST')), THIRTY],
+});
+assert.doesNotMatch(freshReview.audit.flow_checks?.reasons.join(' ') || '', /30-minute answer/);
 
 console.log('All synthetic handoff and flow-rule tests passed.');

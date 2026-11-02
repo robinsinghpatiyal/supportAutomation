@@ -116,6 +116,16 @@ function handoffIn(c, i, nextOnly) {
   };
 }
 
+// "31 Oct 2026, 11:02 AM IST" -> epoch ms, or null
+const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+function istToMs(text) {
+  const m = String(text || '').match(/(\d{1,2})\s+([a-z]{3})[a-z]*\s+(\d{4}),?\s+(\d{1,2}):(\d{2})\s*(am|pm)/i);
+  if (!m || !(m[2].toLowerCase() in MONTHS)) return null;
+  let hour = Number(m[4]) % 12;
+  if (m[6].toLowerCase() === 'pm') hour += 12;
+  return Date.UTC(Number(m[3]), MONTHS[m[2].toLowerCase()], Number(m[1]), hour, Number(m[5])) - 330 * 60000;
+}
+
 // Was a Sales lead (CREATE_LEAD) made for the employer's message at index i, or earlier in the chat?
 // Returns null when the export has no tool data to tell.
 function leadMadeBy(c, i) {
@@ -410,6 +420,26 @@ const RULES = {
           : `Yes to the Sales offer, but no lead was created: "${snip(m.text)}"`);
         alert ||= 'Sales lead missing';
       }
+    });
+
+    // A review under way for more than 30 minutes goes to a human; the 30-minute answer is wrong.
+    // Measured from the chat start, so the real wait is a little longer than the one reported.
+    const startMs = c.createdAt instanceof Date ? c.createdAt.getTime() : null;
+    const flaggedReplies = new Set();
+    (c.toolCalls || []).filter((call) => call.tool === 'apna_chat_query').forEach((call) => {
+      const out = String(call.output || '').replace(/\\+"/g, '"');
+      if (!/"status"\s*:\s*"under_review"/.test(out)) return;
+      const since = out.match(/"under_review_since"\s*:\s*"([^"]+)"/);
+      const sinceMs = since ? istToMs(since[1]) : null;
+      if (sinceMs === null || startMs === null) return;
+      const minutes = Math.round((startMs - sinceMs) / 60000);
+      if (minutes <= 30) return;
+      const reply = repliesAfter(c.messages, call.messageIndex).find((next) => next.speaker === 'Bot');
+      if (!reply || flaggedReplies.has(reply) || !BOT_LINES.review30.test(reply.text)) return;
+      flaggedReplies.add(reply);
+      const waited = minutes >= 120 ? `${Math.floor(minutes / 60)} hours` : `${minutes} minutes`;
+      reasons.push(`30-minute answer for a review under way for ${waited} (since ${since[1]}): "${snip(reply.text)}"`);
+      alert ||= 'Delayed review not handed off';
     });
 
     // Language, read the way the bot prompt reads it:

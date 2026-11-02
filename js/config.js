@@ -89,6 +89,8 @@ export const BOT_LINES = {
   salesOffer: /connect you with our sales team|sales team se (connect|baat)/i,
   // "Which plan should I take" answer: the lead is created in the same turn
   whichPlan: /the right plan depends on your hiring needs/i,
+  // The 30-minute review answer (S2, S84 and their Hinglish versions); wrong once a review is over 30 minutes old
+  review30: /takes around 30 minutes|lagbhag 30 minute/i,
 };
 
 // An employer's agreement to the Sales Team question
