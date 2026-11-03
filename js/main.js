@@ -36,9 +36,12 @@ const state = {
   filters: { from: '', to: '', q: '', cat: '', handoff: '', hideTests: true, engagedOnly: true },
   transcriptFilters: { userId: '', phoneNumber: '', conversationId: '', handoff: '', csat: '', sort: 'newest', hideTests: true },
   agentFilters: { agent: '', answer: '', outcome: '', q: '', sort: 'chats' },
+  agentPageFilters: { name: '', role: 'all', answer: '', outcome: '', q: '' },
+  detailBack: null,
   page: 1,
   transcriptPage: 1,
   agentPage: 1,
+  agentChatPage: 1,
 };
 
 const app = document.getElementById('app');
@@ -465,7 +468,7 @@ function renderListBody() {
       }).join('') || '<tr><td colspan="11" class="muted" style="padding:24px">No chats match these filters.</td></tr>'}</tbody>
     </table></div>
     ${pages > 1 ? `<div class="pager"><button class="btn" id="prev" ${state.page === 1 ? 'disabled' : ''}>Previous</button><span class="muted">Page ${state.page} of ${pages}</span><button class="btn" id="next" ${state.page === pages ? 'disabled' : ''}>Next</button></div>` : ''}`;
-  body.querySelectorAll('tr.row').forEach((tr) => tr.addEventListener('click', () => { location.hash = `#/c/${encodeURIComponent(tr.dataset.id)}`; }));
+  body.querySelectorAll('tr.row').forEach((tr) => tr.addEventListener('click', () => { state.detailBack = null; location.hash = `#/c/${encodeURIComponent(tr.dataset.id)}`; }));
   body.querySelector('#export-csv')?.addEventListener('click', () => {
     if (escalationExport) exportEscalations(rows);
     else exportCSV(rows);
@@ -729,9 +732,10 @@ function renderDetail(id) {
     return;
   }
   const backCat = state.filters.cat ? `?cat=${state.filters.cat}` : '';
+  const back = state.detailBack || { href: `#/list${backCat}`, label: 'Back to conversations' };
   const esc0 = state.escalations[c.id];
   app.innerHTML = `
-    <p><a href="#/list${backCat}">← Back to conversations</a></p>
+    <p><a href="${esc(back.href)}">← ${esc(back.label)}</a></p>
     <div class="card pad">
       <div class="detail-head">
         <div>
@@ -939,11 +943,10 @@ function sessionsInRange() {
     .filter((s) => (!f.from || s.dateIST >= f.from) && (!f.to || s.dateIST <= f.to));
 }
 
-function sessionsFiltered(all) {
-  const f = state.agentFilters;
-  const q = f.q.trim().toLowerCase();
-  return all.filter((s) => {
-    if (f.agent && s.creditedAgent !== f.agent && !s.agents.includes(f.agent)) return false;
+// Answer, outcome and text filters shared by the Agent CSAT page and each agent's page
+function filterSessions(list, f) {
+  const q = (f.q || '').trim().toLowerCase();
+  return list.filter((s) => {
     if (f.answer && s.csatAnswer !== f.answer) return false;
     if (f.outcome && s.outcome !== f.outcome) return false;
     if (q && ![s.conversationId, s.employerName, s.employerId, s.phoneNumber, s.creditedAgent, ...s.agents, s.csatAnswerText]
@@ -952,26 +955,126 @@ function sessionsFiltered(all) {
   }).sort((a, b) => `${b.dateIST} ${b.timeIST}`.localeCompare(`${a.dateIST} ${a.timeIST}`));
 }
 
+const agentHref = (name) => `#/agents/a/${encodeURIComponent(name)}`;
+
 const answerChip = (s) => {
   const cls = { yes: 'good', no: 'alert', other: 'warn' }[s.csatAnswer] || '';
   return `<span class="chip ${cls}">${esc(ANSWER_LABEL[s.csatAnswer])}</span>`;
 };
+
+const answerOptions = (f) => `<div class="field"><label for="ag-answer">CSAT answer</label>
+  <select id="ag-answer"><option value="">Any</option>${Object.entries(ANSWER_LABEL).map(([k, v]) => `<option value="${k}" ${f.answer === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
+  <div class="field"><label for="ag-outcome">Outcome</label>
+  <select id="ag-outcome"><option value="">Any</option>${Object.entries(OUTCOME_LABEL).map(([k, v]) => `<option value="${k}" ${f.outcome === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
+  <div class="field"><label for="ag-q">Search</label><input type="search" id="ag-q" placeholder="Employer, number, conversation id or agent" value="${esc(f.q)}"></div>`;
+
+function agentTilesHTML(t) {
+  const tiles = [
+    ['Agent chats', t.sessions, `${t.chats} chats · ${t.resolved} resolved · ${t.closedByEmployer} closed by employer · ${t.timedOut} timed out · ${t.open} open · ${t.noAgent + t.failed} no agent`],
+    ['CSAT asked', t.csatAskedTimes, `in ${t.csatAskedSessions} agent chats (${fmtPct(t.sessions ? (100 * t.csatAskedSessions) / t.sessions : null)}); ${t.resolvedNotAsked} resolved without it`],
+    ['Answers captured', t.answered, `${fmtPct(t.responseRatePct)} answer rate · ${t.noAnswer} asked, no answer`],
+    ['CSAT yes', fmtPct(t.yesPctOfAnswers), `${t.yes} yes · ${t.no} no · ${t.other} other reply`],
+    ['Yes of all asked', fmtPct(t.yesPctOfAsked), 'an unanswered question counts as not yes'],
+    ['Median first reply', fmtDuration(t.medianFirstReplySeconds), `from the handoff request; average ${fmtDuration(t.avgFirstReplySeconds)}`],
+    ['Median handle time', fmtDuration(t.medianHandleSeconds), `agent joined to resolved; active ${fmtDuration(t.medianActiveSeconds)}`],
+    ['Asked for a Yes', t.yesRequestSessions, `agent chats where the agent asked the employer to click Yes (${fmtPct(t.sessions ? (100 * t.yesRequestSessions) / t.sessions : null)})`],
+    ['Came back', t.cameBack, `${t.notResolvedAfterHandback} said not resolved after the handback · ${t.frustratedSessions} with frustration words`],
+  ];
+  return `<div class="section tiles">
+      ${tiles.map(([l, v, sub]) => `<div class="card tile"><div class="label">${esc(l)}</div><div class="value num">${esc(v)}</div><div class="sub">${esc(sub)}</div></div>`).join('')}
+    </div>
+    <div class="section card pad small muted">CSAT asked means BlueMachines sent the feedback question when the agent resolved the chat. The answer is the employer's first message after it. ${t.csatAskedSessions ? `Answers were captured for ${t.answered} of ${t.csatAskedSessions} questions (${fmtPct(t.responseRatePct)}), so check the answer rate before judging an agent on Yes %.` : ''}</div>`;
+}
+
+const pctCell = (v) => `<td class="num">${esc(fmtPct(v))}</td>`;
+
+function daysTableHTML(days, title) {
+  return `<div class="section card">
+      <div class="pager" style="justify-content:space-between"><b>${esc(title)}</b><span class="muted small">Day of the handoff request (IST)</span></div>
+      <div class="table-wrap"><table class="list">
+        <thead><tr><th>Date</th><th class="num">Agent chats</th><th class="num">Resolved</th><th class="num">CSAT asked</th><th class="num">Answered</th><th class="num">Yes</th><th class="num">No</th><th class="num">Other</th><th class="num">Answer rate</th><th class="num">CSAT yes</th><th class="num">Asked for a Yes</th><th class="num">Median first reply</th></tr></thead>
+        <tbody>${days.map((d) => `<tr><td class="when">${esc(fmtDate(d.date))}</td><td class="num">${d.sessions}</td><td class="num">${d.resolved}</td><td class="num">${d.csatAskedSessions}</td><td class="num">${d.answered}</td><td class="num">${d.yes}</td><td class="num">${d.no}</td><td class="num">${d.other}</td>${pctCell(d.responseRatePct)}${pctCell(d.yesPctOfAnswers)}<td class="num">${d.yesRequestSessions}</td><td class="num">${esc(fmtDuration(d.medianFirstReplySeconds))}</td></tr>`).join('') || '<tr><td colspan="12" class="muted">No agent chats.</td></tr>'}</tbody>
+      </table></div>
+    </div>`;
+}
+
+// The agent part of one chat, with times (IST), for the expandable row
+function agentLogHTML(s) {
+  if (!s.log || !s.log.length) return '<p class="muted">No messages in this agent chat.</p>';
+  return `<div class="agent-log">${s.log.map((e) => `<div class="log-${e.kind}"><span class="muted num">${esc(istClock(e.at))}</span> ${e.kind === 'event'
+    ? `<span class="muted">${esc(e.text)}</span>`
+    : `<b>${esc(e.who)}</b>: ${esc(e.text)}`}</div>`).join('')}</div>`;
+}
+
+// One table of agent chats; pageKey is the state field holding its page number
+function sessionListHTML(rows, pageKey, heading, linkAgents) {
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  state[pageKey] = Math.min(Math.max(1, state[pageKey]), pages);
+  const slice = rows.slice((state[pageKey] - 1) * PAGE_SIZE, state[pageKey] * PAGE_SIZE);
+  const agentName = (n) => (linkAgents && n !== NO_AGENT ? `<a href="${agentHref(n)}" data-stop>${esc(n)}</a>` : esc(n));
+  return `<div class="section card">
+      <div class="pager" style="justify-content:space-between">
+        <span class="muted">${heading}</span>
+        <button class="btn" id="sl-export" ${rows.length ? '' : 'disabled'}>Export these chats to CSV</button>
+      </div>
+      <div class="table-wrap"><table class="list">
+        <thead><tr><th>Requested (IST)</th><th>Employer</th><th>Agent</th><th>Outcome</th><th>Times (IST)</th><th class="num">First reply</th><th class="num">Handle time</th><th class="num">Longest wait</th><th>CSAT</th><th>Asked for a Yes</th><th>After the agent chat</th></tr></thead>
+        <tbody>${slice.map((s, i) => `<tr class="row" data-id="${esc(s.conversationId)}">
+          <td class="when num">${esc(fmtDate(s.dateIST))}<br><span class="muted">${esc(s.timeIST)}${s.inSupportHours ? '' : ' · outside hours'}</span><br><span class="muted small">${esc(s.conversationId)}${s.sessionsInChat > 1 ? ` · request ${s.no} of ${s.sessionsInChat}` : ''}</span><br><button class="btn small" data-msgs="${i}" style="margin-top:6px">Show messages</button></td>
+          <td>${esc(s.employerName || '–')}<br><span class="muted small">${esc(s.employerId || '')}</span><br><span class="muted small num">${esc(s.phoneNumber || '')}</span></td>
+          <td><b>${agentName(s.creditedAgent)}</b>${s.agents.filter((a) => a !== s.creditedAgent).length ? `<br><span class="muted small">also ${s.agents.filter((a) => a !== s.creditedAgent).map(agentName).join(', ')}</span>` : ''}${s.reassignments ? `<br><span class="muted small">${s.reassignments} reassignment${s.reassignments > 1 ? 's' : ''}</span>` : ''}</td>
+          <td>${esc(OUTCOME_LABEL[s.outcome])}<br><span class="muted small">${s.agentMessages} agent · ${s.customerMessages} employer msgs</span></td>
+          <td class="small num nowrap">Requested ${esc(istClock(s.requestedAt) || '–')}<br>Assigned ${esc(istClock(s.assignedAt) || '–')}<br>First reply ${esc(istClock(s.firstAgentReplyAt) || '–')}<br>Ended ${esc(istClock(s.endAt) || '–')}</td>
+          <td class="num">${esc(fmtDuration(s.firstReplySeconds))}</td>
+          <td class="num">${esc(fmtDuration(s.handleSeconds))}</td>
+          <td class="num">${esc(fmtDuration(s.longestWaitSeconds))}${s.lastEmployerMessageUnanswered ? '<br><span class="chip warn">last message unanswered</span>' : ''}</td>
+          <td>${answerChip(s)}${s.csatAsked ? `<br><span class="muted small">asked ${esc(istClock(s.feedbackAt[0]))}${s.csatAsked > 1 ? ` (${s.csatAsked} times)` : ''}</span>` : ''}${s.csatAnswerText !== null ? `<br><span class="muted small">"${esc(truncate(s.csatAnswerText, 40))}" at ${esc(istClock(s.csatAnswerAt))}</span>` : ''}</td>
+          <td>${s.yesRequests ? `<span class="chip warn" title="${esc(s.yesRequestText || '')}">Asked ×${s.yesRequests}</span>` : '<span class="muted">–</span>'}</td>
+          <td class="small">${s.askedForSupportAgain ? 'Asked for support again<br>' : ''}${s.wroteToBotAfter ? `Wrote to the bot: "${esc(truncate(s.wroteToBotAfter, 50))}"` : ''}${s.frustration.length ? `<br><span class="chip alert">${esc(s.frustration.join(', '))}</span>` : ''}${!s.askedForSupportAgain && !s.wroteToBotAfter && !s.frustration.length ? '<span class="muted">–</span>' : ''}</td>
+        </tr>`).join('') || '<tr><td colspan="11" class="muted" style="padding:24px">No agent chats match these filters.</td></tr>'}</tbody>
+      </table></div>
+      ${pages > 1 ? `<div class="pager"><button class="btn" id="sl-prev" ${state[pageKey] === 1 ? 'disabled' : ''}>Previous</button><span class="muted">Page ${state[pageKey]} of ${pages}</span><button class="btn" id="sl-next" ${state[pageKey] === pages ? 'disabled' : ''}>Next</button></div>` : ''}
+    </div>`;
+}
+
+function bindSessionList(root, rows, pageKey, rerender, back, fileTag) {
+  const slice = rows.slice((state[pageKey] - 1) * PAGE_SIZE, state[pageKey] * PAGE_SIZE);
+  root.querySelectorAll('[data-stop]').forEach((a) => a.addEventListener('click', (e) => e.stopPropagation()));
+  root.querySelectorAll('tr.row[data-id]').forEach((tr) => tr.addEventListener('click', () => {
+    state.detailBack = back;
+    location.hash = `#/c/${encodeURIComponent(tr.dataset.id)}`;
+  }));
+  root.querySelectorAll('[data-msgs]').forEach((btn) => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const tr = btn.closest('tr');
+    const next = tr.nextElementSibling;
+    if (next && next.classList.contains('msgs-row')) {
+      next.remove();
+      btn.textContent = 'Show messages';
+      return;
+    }
+    const row = document.createElement('tr');
+    row.className = 'msgs-row';
+    row.innerHTML = `<td colspan="11">${agentLogHTML(slice[Number(btn.dataset.msgs)])}</td>`;
+    tr.after(row);
+    btn.textContent = 'Hide messages';
+  }));
+  root.querySelector('#sl-export')?.addEventListener('click', () => exportAgentChatsCSV(rows, fileTag));
+  root.querySelector('#sl-prev')?.addEventListener('click', () => { state[pageKey]--; rerender(); window.scrollTo(0, 0); });
+  root.querySelector('#sl-next')?.addEventListener('click', () => { state[pageKey]++; rerender(); window.scrollTo(0, 0); });
+}
 
 function renderAgents(params) {
   if (params.has('agent')) state.agentFilters.agent = params.get('agent');
   const f = state.agentFilters;
   const names = [...new Set(sessionsInRange().flatMap((s) => [s.creditedAgent, ...s.agents]))].sort();
   app.innerHTML = `
-    <div class="section-head"><h2>Agent CSAT</h2><span class="muted small">Support agent chats from the BlueMachines human-support transcript, one row per handoff request.</span></div>
+    <div class="section-head"><h2>Agent CSAT</h2><span class="muted small">Support agent chats from the BlueMachines human-support transcript, one row per handoff request. Click an agent to see all their chats.</span></div>
     <div class="filters card pad" id="ag-filters">
       ${dateFilters()}
       <div class="field"><label for="ag-agent">Agent</label>
         <select id="ag-agent"><option value="">All agents</option>${names.map((n) => `<option ${f.agent === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></div>
-      <div class="field"><label for="ag-answer">CSAT answer</label>
-        <select id="ag-answer"><option value="">Any</option>${Object.entries(ANSWER_LABEL).map(([k, v]) => `<option value="${k}" ${f.answer === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
-      <div class="field"><label for="ag-outcome">Outcome</label>
-        <select id="ag-outcome"><option value="">Any</option>${Object.entries(OUTCOME_LABEL).map(([k, v]) => `<option value="${k}" ${f.outcome === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
-      <div class="field"><label for="ag-q">Search</label><input type="search" id="ag-q" placeholder="Employer, number, conversation id or agent" value="${esc(f.q)}"></div>
+      ${answerOptions(f)}
     </div>
     <div id="ag-body"></div>`;
   const root = app.querySelector('#ag-filters');
@@ -999,31 +1102,12 @@ function renderAgentsBody() {
   const f = state.agentFilters;
   const scope = f.agent ? all.filter((s) => s.creditedAgent === f.agent) : all;
   const t = csatCounts(scope);
-  const tiles = [
-    ['Agent chats', t.sessions, `${t.chats} chats · ${t.resolved} resolved · ${t.closedByEmployer} closed by employer · ${t.timedOut} timed out · ${t.open} open · ${t.noAgent + t.failed} no agent`],
-    ['CSAT asked', t.csatAskedTimes, `in ${t.csatAskedSessions} agent chats (${fmtPct(t.sessions ? (100 * t.csatAskedSessions) / t.sessions : null)}); ${t.resolvedNotAsked} resolved without it`],
-    ['Answers captured', t.answered, `${fmtPct(t.responseRatePct)} answer rate · ${t.noAnswer} asked, no answer`],
-    ['CSAT yes', fmtPct(t.yesPctOfAnswers), `${t.yes} yes · ${t.no} no · ${t.other} other reply`],
-    ['Yes of all asked', fmtPct(t.yesPctOfAsked), 'an unanswered question counts as not yes'],
-    ['Median first reply', fmtDuration(t.medianFirstReplySeconds), `from the handoff request; average ${fmtDuration(t.avgFirstReplySeconds)}`],
-    ['Median handle time', fmtDuration(t.medianHandleSeconds), `agent joined to resolved; active ${fmtDuration(t.medianActiveSeconds)}`],
-    ['Asked for a Yes', t.yesRequestSessions, `agent chats where the agent asked the employer to click Yes (${fmtPct(t.sessions ? (100 * t.yesRequestSessions) / t.sessions : null)})`],
-    ['Came back', t.cameBack, `${t.notResolvedAfterHandback} said not resolved after the handback · ${t.frustratedSessions} with frustration words`],
-  ];
   const agents = agentSummary(all);
   const sortKey = { chats: (r) => -r.sessions, yes: (r) => (r.yesPctOfAnswers ?? 101), answer: (r) => (r.responseRatePct ?? 101), reply: (r) => -(r.medianFirstReplySeconds ?? -1), back: (r) => -r.cameBack }[f.sort] || ((r) => -r.sessions);
   agents.sort((a, b) => (a.agent === NO_AGENT) - (b.agent === NO_AGENT) || sortKey(a) - sortKey(b) || a.agent.localeCompare(b.agent));
-  const days = csatDaily(scope);
-  const rows = sessionsFiltered(all);
-  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
-  state.agentPage = Math.min(state.agentPage, pages);
-  const slice = rows.slice((state.agentPage - 1) * PAGE_SIZE, state.agentPage * PAGE_SIZE);
-  const pctCell = (v) => `<td class="num">${esc(fmtPct(v))}</td>`;
+  const rows = filterSessions(f.agent ? all.filter((s) => s.creditedAgent === f.agent || s.agents.includes(f.agent)) : all, f);
   body.innerHTML = `
-    <div class="section tiles">
-      ${tiles.map(([l, v, sub]) => `<div class="card tile"><div class="label">${esc(l)}</div><div class="value num">${esc(v)}</div><div class="sub">${esc(sub)}</div></div>`).join('')}
-    </div>
-    <div class="section card pad small muted">CSAT asked means BlueMachines sent the feedback question when the agent resolved the chat. The answer is the employer's first message after it. ${t.csatAskedSessions ? `Answers were captured for ${t.answered} of ${t.csatAskedSessions} questions (${fmtPct(t.responseRatePct)}), so check the answer rate before judging an agent on Yes %.` : ''}</div>
+    ${agentTilesHTML(t)}
     <div class="section card">
       <div class="pager" style="justify-content:space-between">
         <b>Agents</b>
@@ -1043,8 +1127,8 @@ function renderAgentsBody() {
         <thead><tr><th>Agent</th><th class="num">Agent chats</th><th class="num">Involved</th><th class="num">Passed on</th><th class="num">Resolved</th><th class="num">Closed by employer</th><th class="num">Timed out</th><th class="num">Open</th>
           <th class="num">CSAT asked</th><th class="num">Answered</th><th class="num">Yes</th><th class="num">No</th><th class="num">Other</th><th class="num">Answer rate</th><th class="num">CSAT yes</th><th class="num">Yes of asked</th>
           <th class="num">Asked for a Yes</th><th class="num">Not resolved after handback</th><th class="num">Came back</th><th class="num">Median first reply</th><th class="num">Median handle time</th><th class="num">Longest wait</th><th>Dates (IST)</th></tr></thead>
-        <tbody>${agents.map((r) => `<tr class="row" data-agent="${esc(r.agent)}" style="${f.agent === r.agent ? 'background:var(--surface-2)' : ''}">
-          <td class="nowrap"><b>${esc(r.agent)}</b></td><td class="num">${r.sessions}</td><td class="num">${r.involved}</td><td class="num">${r.passedOn}</td>
+        <tbody>${agents.map((r) => `<tr class="row" data-agent="${esc(r.agent)}">
+          <td class="nowrap"><a href="${agentHref(r.agent)}"><b>${esc(r.agent)}</b></a></td><td class="num">${r.sessions}</td><td class="num">${r.involved}</td><td class="num">${r.passedOn}</td>
           <td class="num">${r.resolved}</td><td class="num">${r.closedByEmployer}</td><td class="num">${r.timedOut}</td><td class="num">${r.open}</td>
           <td class="num">${r.csatAskedSessions}</td><td class="num">${r.answered}</td><td class="num">${r.yes}</td><td class="num">${r.no}</td><td class="num">${r.other}</td>
           ${pctCell(r.responseRatePct)}${pctCell(r.yesPctOfAnswers)}${pctCell(r.yesPctOfAsked)}
@@ -1054,48 +1138,69 @@ function renderAgentsBody() {
         </tr>`).join('')}</tbody>
       </table></div>
     </div>
-    <div class="section card">
-      <div class="pager" style="justify-content:space-between"><b>By day${f.agent ? ` · ${esc(f.agent)}` : ''}</b><span class="muted small">Day of the handoff request (IST)</span></div>
-      <div class="table-wrap"><table class="list">
-        <thead><tr><th>Date</th><th class="num">Agent chats</th><th class="num">Resolved</th><th class="num">CSAT asked</th><th class="num">Answered</th><th class="num">Yes</th><th class="num">No</th><th class="num">Other</th><th class="num">Answer rate</th><th class="num">CSAT yes</th><th class="num">Asked for a Yes</th><th class="num">Median first reply</th></tr></thead>
-        <tbody>${days.map((d) => `<tr><td class="when">${esc(fmtDate(d.date))}</td><td class="num">${d.sessions}</td><td class="num">${d.resolved}</td><td class="num">${d.csatAskedSessions}</td><td class="num">${d.answered}</td><td class="num">${d.yes}</td><td class="num">${d.no}</td><td class="num">${d.other}</td>${pctCell(d.responseRatePct)}${pctCell(d.yesPctOfAnswers)}<td class="num">${d.yesRequestSessions}</td><td class="num">${esc(fmtDuration(d.medianFirstReplySeconds))}</td></tr>`).join('')}</tbody>
-      </table></div>
-    </div>
-    <div class="section card">
-      <div class="pager" style="justify-content:space-between">
-        <span class="muted">${rows.length} agent chats${f.agent ? ` with ${esc(f.agent)} (credited or involved)` : ''}</span>
-        <button class="btn" id="ag-export-chats" ${rows.length ? '' : 'disabled'}>Export these chats to CSV</button>
-      </div>
-      <div class="table-wrap"><table class="list">
-        <thead><tr><th>Requested (IST)</th><th>Employer</th><th>Agent</th><th>Outcome</th><th>Times (IST)</th><th class="num">First reply</th><th class="num">Handle time</th><th class="num">Longest wait</th><th>CSAT</th><th>Asked for a Yes</th><th>After the agent chat</th></tr></thead>
-        <tbody>${slice.map((s) => `<tr class="row" data-id="${esc(s.conversationId)}">
-          <td class="when num">${esc(fmtDate(s.dateIST))}<br><span class="muted">${esc(s.timeIST)}${s.inSupportHours ? '' : ' · outside hours'}</span><br><span class="muted small">${esc(s.conversationId)}${s.sessionsInChat > 1 ? ` · request ${s.no} of ${s.sessionsInChat}` : ''}</span></td>
-          <td>${esc(s.employerName || '–')}<br><span class="muted small">${esc(s.employerId || '')}</span><br><span class="muted small num">${esc(s.phoneNumber || '')}</span></td>
-          <td><b>${esc(s.creditedAgent)}</b>${s.agents.filter((a) => a !== s.creditedAgent).length ? `<br><span class="muted small">also ${esc(s.agents.filter((a) => a !== s.creditedAgent).join(', '))}</span>` : ''}${s.reassignments ? `<br><span class="muted small">${s.reassignments} reassignment${s.reassignments > 1 ? 's' : ''}</span>` : ''}</td>
-          <td>${esc(OUTCOME_LABEL[s.outcome])}<br><span class="muted small">${s.agentMessages} agent · ${s.customerMessages} employer msgs</span></td>
-          <td class="small num nowrap">Requested ${esc(istClock(s.requestedAt) || '–')}<br>Assigned ${esc(istClock(s.assignedAt) || '–')}<br>First reply ${esc(istClock(s.firstAgentReplyAt) || '–')}<br>Ended ${esc(istClock(s.endAt) || '–')}</td>
-          <td class="num">${esc(fmtDuration(s.firstReplySeconds))}</td>
-          <td class="num">${esc(fmtDuration(s.handleSeconds))}</td>
-          <td class="num">${esc(fmtDuration(s.longestWaitSeconds))}${s.lastEmployerMessageUnanswered ? '<br><span class="chip warn">last message unanswered</span>' : ''}</td>
-          <td>${answerChip(s)}${s.csatAsked ? `<br><span class="muted small">asked ${esc(istClock(s.feedbackAt[0]))}${s.csatAsked > 1 ? ` (${s.csatAsked} times)` : ''}</span>` : ''}${s.csatAnswerText !== null ? `<br><span class="muted small">"${esc(truncate(s.csatAnswerText, 40))}" at ${esc(istClock(s.csatAnswerAt))}</span>` : ''}</td>
-          <td>${s.yesRequests ? `<span class="chip warn" title="${esc(s.yesRequestText || '')}">Asked ×${s.yesRequests}</span>` : '<span class="muted">–</span>'}</td>
-          <td class="small">${s.askedForSupportAgain ? 'Asked for support again<br>' : ''}${s.wroteToBotAfter ? `Wrote to the bot: "${esc(truncate(s.wroteToBotAfter, 50))}"` : ''}${s.frustration.length ? `<br><span class="chip alert">${esc(s.frustration.join(', '))}</span>` : ''}${!s.askedForSupportAgain && !s.wroteToBotAfter && !s.frustration.length ? '<span class="muted">–</span>' : ''}</td>
-        </tr>`).join('') || '<tr><td colspan="11" class="muted" style="padding:24px">No agent chats match these filters.</td></tr>'}</tbody>
-      </table></div>
-      ${pages > 1 ? `<div class="pager"><button class="btn" id="ag-prev" ${state.agentPage === 1 ? 'disabled' : ''}>Previous</button><span class="muted">Page ${state.agentPage} of ${pages}</span><button class="btn" id="ag-next" ${state.agentPage === pages ? 'disabled' : ''}>Next</button></div>` : ''}
-    </div>`;
+    ${daysTableHTML(csatDaily(scope), f.agent ? `By day · ${f.agent}` : 'By day')}
+    ${sessionListHTML(rows, 'agentPage', `${rows.length} agent chats${f.agent ? ` with ${esc(f.agent)} (credited or involved)` : ''}`, true)}`;
   body.querySelector('#ag-sort').addEventListener('change', (e) => { f.sort = e.target.value; renderAgentsBody(); });
-  body.querySelectorAll('tr.row[data-agent]').forEach((tr) => tr.addEventListener('click', () => {
-    f.agent = f.agent === tr.dataset.agent ? '' : tr.dataset.agent;
-    state.agentPage = 1;
-    renderAgents(new URLSearchParams(f.agent ? { agent: f.agent } : {}));
-    history.replaceState(null, '', f.agent ? `#/agents?agent=${encodeURIComponent(f.agent)}` : '#/agents');
-  }));
-  body.querySelectorAll('tr.row[data-id]').forEach((tr) => tr.addEventListener('click', () => { location.hash = `#/c/${encodeURIComponent(tr.dataset.id)}`; }));
+  body.querySelectorAll('tr.row[data-agent]').forEach((tr) => tr.addEventListener('click', () => { location.hash = agentHref(tr.dataset.agent); }));
   body.querySelector('#ag-export-agents').addEventListener('click', () => exportAgentsCSV(agents));
-  body.querySelector('#ag-export-chats')?.addEventListener('click', () => exportAgentChatsCSV(rows));
-  body.querySelector('#ag-prev')?.addEventListener('click', () => { state.agentPage--; renderAgentsBody(); window.scrollTo(0, 0); });
-  body.querySelector('#ag-next')?.addEventListener('click', () => { state.agentPage++; renderAgentsBody(); window.scrollTo(0, 0); });
+  bindSessionList(body, rows, 'agentPage', renderAgentsBody, { href: location.hash || '#/agents', label: 'Back to Agent CSAT' }, f.agent);
+}
+
+// One agent: their numbers (chats credited to them) and every chat they were part of
+function renderAgentPage(name) {
+  const f = state.agentPageFilters;
+  if (f.name !== name) {
+    Object.assign(f, { name, role: 'all', answer: '', outcome: '', q: '' });
+    state.agentChatPage = 1;
+  }
+  app.innerHTML = `
+    <p><a href="#/agents">← All agents</a></p>
+    <div class="card pad"><h1>${esc(name)}</h1><div class="meta" id="ap-meta"></div></div>
+    <div class="section filters card pad" id="ap-filters">
+      ${dateFilters()}
+      <div class="field"><label for="ap-role">Chats</label>
+        <select id="ap-role">
+          <option value="all" ${f.role === 'all' ? 'selected' : ''}>All chats with this agent</option>
+          <option value="credited" ${f.role === 'credited' ? 'selected' : ''}>Credited to this agent</option>
+          <option value="passed" ${f.role === 'passed' ? 'selected' : ''}>Passed on to another agent</option>
+        </select></div>
+      ${answerOptions(f)}
+    </div>
+    <div id="ap-body"></div>`;
+  const root = app.querySelector('#ap-filters');
+  const set = (key, value) => { f[key] = value; state.agentChatPage = 1; renderAgentPageBody(name); };
+  root.querySelector('#ap-role').addEventListener('change', (e) => set('role', e.target.value));
+  root.querySelector('#ag-answer').addEventListener('change', (e) => set('answer', e.target.value));
+  root.querySelector('#ag-outcome').addEventListener('change', (e) => set('outcome', e.target.value));
+  root.querySelector('#ag-q').addEventListener('input', (e) => set('q', e.target.value));
+  bindDateFilters(root, (rerenderFilters) => { if (rerenderFilters) renderAgentPage(name); else renderAgentPageBody(name); });
+  renderAgentPageBody(name);
+  window.scrollTo(0, 0);
+}
+
+function renderAgentPageBody(name) {
+  const f = state.agentPageFilters;
+  const body = app.querySelector('#ap-body');
+  const mine = sessionsInRange().filter((s) => s.creditedAgent === name || s.agents.includes(name));
+  const credited = mine.filter((s) => s.creditedAgent === name);
+  const r = agentSummary(mine).find((x) => x.agent === name);
+  app.querySelector('#ap-meta').innerHTML = r ? `
+    <span>Agent chats <b>${r.sessions}</b></span>
+    <span>Involved in <b>${r.involved}</b></span>
+    <span>Passed on <b>${r.passedOn}</b></span>
+    <span>Messages sent <b>${r.messages}</b></span>
+    ${r.firstDate ? `<span>Dates <b>${esc(fmtDate(r.firstDate))} to ${esc(fmtDate(r.lastDate))}</b></span>` : ''}` : '<span class="muted">No chats in this range</span>';
+  if (!mine.length) {
+    body.innerHTML = '<div class="section card pad muted">No chats for this agent in this range.</div>';
+    return;
+  }
+  const byRole = { all: mine, credited, passed: mine.filter((s) => s.creditedAgent !== name) }[f.role] || mine;
+  const rows = filterSessions(byRole, f);
+  body.innerHTML = `
+    ${agentTilesHTML(csatCounts(credited))}
+    ${daysTableHTML(csatDaily(credited), 'By day')}
+    ${sessionListHTML(rows, 'agentChatPage', `${rows.length} chats`, true)}`;
+  bindSessionList(body, rows, 'agentChatPage', () => renderAgentPageBody(name), { href: agentHref(name), label: `Back to ${name}` }, name);
 }
 
 const round1 = (v) => (v === null || v === undefined ? '' : Math.round(v * 10) / 10);
@@ -1114,7 +1219,7 @@ function exportAgentsCSV(agents) {
   download(`apna-expert-agent-csat${range}-${istToday()}.csv`, toCSV([head, ...data]));
 }
 
-function exportAgentChatsCSV(rows) {
+function exportAgentChatsCSV(rows, tag) {
   const head = ['conversation_id', 'request_no', 'requests_in_chat', 'date_ist', 'time_ist', 'in_support_hours', 'employer_name', 'apna_employer_id', 'employer_number',
     'credited_agent', 'agents_involved', 'messages_per_agent', 'reassignments', 'outcome', 'requested_at_ist', 'assigned_at_ist', 'agent_joined_at_ist', 'first_agent_reply_at_ist', 'last_agent_reply_at_ist', 'ended_at_ist',
     'first_reply_seconds', 'assign_seconds', 'handle_seconds', 'active_seconds', 'total_seconds', 'longest_wait_seconds', 'last_employer_message_unanswered', 'agent_messages', 'employer_messages',
@@ -1126,7 +1231,7 @@ function exportAgentChatsCSV(rows) {
     s.firstReplySeconds, s.assignSeconds, s.handleSeconds, s.activeSeconds, s.totalSeconds, s.longestWaitSeconds, s.lastEmployerMessageUnanswered ? 'yes' : 'no', s.agentMessages, s.customerMessages,
     s.csatAsked, s.feedbackAt.map(istStamp).join('; '), ANSWER_LABEL[s.csatAnswer], s.csatAnswerText, istStamp(s.csatAnswerAt), s.csatAnswerSeconds,
     s.yesRequests, s.yesRequestText, s.askedForSupportAgain ? 'yes' : 'no', s.wroteToBotAfter, s.handbackReply ? ANSWER_LABEL[s.handbackReply] : '', s.frustration.join('; '), s.transcript]);
-  const agent = state.agentFilters.agent ? `-${state.agentFilters.agent.replace(/[^a-z0-9]+/gi, '-')}` : '';
+  const agent = tag ? `-${tag.replace(/[^a-z0-9]+/gi, '-')}` : '';
   download(`apna-expert-agent-chats${agent}-${istToday()}.csv`, toCSV([head, ...data]));
 }
 
@@ -1141,7 +1246,7 @@ function agentSessionsHTML(c) {
       <div style="margin-top:4px">CSAT ${answerChip(s)}${s.csatAsked ? ` <span class="muted small">asked ${esc(istClock(s.feedbackAt[0]))}${s.csatAnswerText !== null ? `, answered "${esc(truncate(s.csatAnswerText, 40))}" at ${esc(istClock(s.csatAnswerAt))}` : ''}</span>` : ''}${s.yesRequests ? ` <span class="chip warn" title="${esc(s.yesRequestText || '')}">Agent asked for a Yes ×${s.yesRequests}</span>` : ''}</div>
       ${s.wroteToBotAfter ? `<div class="muted small">After the handback the employer wrote: "${esc(truncate(s.wroteToBotAfter, 80))}"</div>` : ''}
     </div>`).join('')}
-    <p class="small" style="margin-top:6px"><a href="#/agents?agent=${encodeURIComponent(list[list.length - 1].creditedAgent)}">All chats of ${esc(list[list.length - 1].creditedAgent)}</a></p></div>`;
+    <p class="small" style="margin-top:6px"><a href="${agentHref(list[list.length - 1].creditedAgent)}">All chats of ${esc(list[list.length - 1].creditedAgent)}</a></p></div>`;
 }
 
 // ---------- routing ----------
@@ -1160,6 +1265,7 @@ function route() {
   if (path.startsWith('/transcripts')) return renderTranscriptList();
   if (path.startsWith('/c/')) return renderDetail(decodeURIComponent(path.slice(3)));
   if (path.startsWith('/list')) return renderList(params);
+  if (path.startsWith('/agents/a/')) return renderAgentPage(decodeURIComponent(path.slice('/agents/a/'.length)));
   if (path.startsWith('/agents')) return renderAgents(params);
   return renderOverview();
 }

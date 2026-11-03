@@ -32,6 +32,23 @@ export const ANSWER_LABEL = {
   not_asked: 'Not asked',
 };
 
+const EVENT_TEXT = {
+  requested: 'Handoff requested',
+  waiting: 'Waiting for an agent',
+  assigned: 'Assigned to an agent',
+  human_active: 'Agent joined',
+  reassigned: 'Reassigned',
+  resolved: 'Resolved by agent',
+  closed: 'Closed by employer',
+  timed_out: 'Timed out',
+  failed: 'Handoff failed',
+  feedback_prompt: 'CSAT question sent',
+  ai_resumed: 'Back to the bot',
+};
+
+// Agent messages can carry HTML (<b>, <br>): keep the words only
+const plain = (t) => String(t || '').replace(/<br\s*\/?>/gi, '\n').replace(/<\/?[a-z][^>]*>/gi, '').trim();
+
 const seconds = (from, to) => {
   const a = Date.parse(from || '');
   const b = Date.parse(to || '');
@@ -78,7 +95,7 @@ function newSession(no, at) {
     answerText: null,
     answerAt: null,
     afterEndMessages: 0,
-    lines: [],
+    log: [],
   };
 }
 
@@ -98,9 +115,11 @@ export function agentSessions(c) {
       if (item.event === 'requested') {
         s = newSession(sessions.length + 1, item.at);
         sessions.push(s);
+        s.log.push({ at: item.at, kind: 'event', who: null, text: EVENT_TEXT.requested });
         continue;
       }
       const x = current(item.at);
+      x.log.push({ at: item.at, kind: 'event', who: null, text: EVENT_TEXT[item.event] || item.event.replace(/_/g, ' ') });
       if (item.event === 'waiting') x.waitingAt = x.waitingAt || item.at;
       else if (item.event === 'assigned') x.assignedAt = x.assignedAt || item.at;
       else if (item.event === 'human_active') x.humanActiveAt = x.humanActiveAt || item.at;
@@ -128,7 +147,7 @@ export function agentSessions(c) {
         x.waitingSince = null;
       }
       if (AGENT_YES_REQUEST.test(item.text)) x.yesRequests.push({ name, at: item.at, text: item.text });
-      x.lines.push(`[${istParts(item.at).time}] ${name}: ${item.text}`);
+      x.log.push({ at: item.at, kind: 'agent', who: name, text: plain(item.text) });
       continue;
     }
 
@@ -136,17 +155,18 @@ export function agentSessions(c) {
     if (x.feedbackAt.length && x.answerText === null) {
       x.answerText = item.text;
       x.answerAt = item.at;
-      x.lines.push(`[${istParts(item.at).time}] Employer (feedback answer): ${item.text}`);
+      x.log.push({ at: item.at, kind: 'answer', who: 'Employer (CSAT answer)', text: item.text });
       continue;
     }
     if (x.endEvent) {
       x.afterEndMessages++;
+      x.log.push({ at: item.at, kind: 'employer', who: 'Employer', text: item.text });
       continue;
     }
     x.customerMessages++;
     if (!x.waitingSince) x.waitingSince = item.at;
     for (const w of frustrationWords(item.text)) if (!x.frustration.includes(w)) x.frustration.push(w);
-    x.lines.push(`[${istParts(item.at).time}] Employer: ${item.text}`);
+    x.log.push({ at: item.at, kind: 'employer', who: 'Employer', text: item.text });
   }
 
   // Employer messages to the bot after each hand back (BlueMachines' "Hope the support team has resolved your queries")
@@ -223,7 +243,8 @@ export function agentSessions(c) {
       wroteToBotAfter,
       // The employer's reply to the bot's hand-back line: a plain no or "Not resolved" is a second CSAT signal
       handbackReply: wroteToBotAfter === null ? null : csatAnswer(wroteToBotAfter),
-      transcript: x.lines.join('\n'),
+      log: x.log,
+      transcript: x.log.map((e) => `[${istParts(e.at).time}] ${e.kind === 'event' ? `-- ${e.text} --` : `${e.who}: ${e.text}`}`).join('\n'),
     };
   });
 }

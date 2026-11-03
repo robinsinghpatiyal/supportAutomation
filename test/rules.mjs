@@ -535,6 +535,10 @@ assert.equal(sYes.timeIST, '11:30');
 assert.equal(sYes.inSupportHours, true);
 assert.equal(csatYes.csat, 'yes');
 assert.deepEqual(csatYes.supportAgents, ['Rahul Kumar Sinha', 'Falguni Bera']);
+// The agent chat log keeps events and messages in order, with HTML removed
+assert.deepEqual(sYes.log.slice(0, 2).map((e) => [e.kind, e.text]), [['event', 'Handoff requested'], ['event', 'Waiting for an agent']]);
+assert.deepEqual(sYes.log.filter((e) => e.kind !== 'event').map((e) => e.who), ['Rahul Kumar Sinha', 'Employer', 'Falguni Bera', 'Falguni Bera', 'Employer (CSAT answer)']);
+assert.match(sYes.transcript, /\[11:40\] -- CSAT question sent --/);
 
 // Asked, never answered; the employer then told the bot "Not resolved" and asked again: two agent chats
 const csatTwice = makeChat({
