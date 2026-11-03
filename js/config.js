@@ -65,7 +65,7 @@ export const BOT_LINES = {
   welcome: /welcome to apna support/i,
   resolveQuestion: /did this resolve your query|kya (isse|is se) aapki query (solve|resolve)/i,
   closing: /thank you for choosing apna|apna chunne ke liye dhanyavaad/i,
-  salesAnswer: /thank you! our sales team will reach out to you within 24 hours|your request is already with our sales team/i,
+  salesAnswer: /thank you! our sales team will reach out to you within 24 hours|your request is already with our sales team|yes, our sales team will call you within 24 hours|hamari sales team 24 ghante mein aapko call karegi/i,
   supportEmail: /employersupport@apna\.co/i,
   hold: /support team will join this chat shortly|support team jald hi is chat/i,
   // A connection is happening now. Offers ("I can connect", "Would you like") are not connect lines.
@@ -89,6 +89,8 @@ export const BOT_LINES = {
   salesOffer: /connect you with our sales team|sales team se (connect|baat)/i,
   // "Which plan should I take" answer: the lead is created in the same turn
   whichPlan: /the right plan depends on your hiring needs/i,
+  // An offer to connect to support (not to Sales). Outside support hours the bot asks "Did this resolve your query?" instead.
+  supportOffer: /would you like (me )?to connect (you )?with (them|our support team)|i can connect you with our support team|support team se [^.?\n]*(connect|baat)[^.?\n]*\?/i,
   // The 30-minute review answer (S2, S84 and their Hinglish versions); wrong once a review is over 30 minutes old
   review30: /takes around 30 minutes|lagbhag 30 minute/i,
 };
@@ -184,7 +186,7 @@ export const CATEGORIES = [
   {
     key: 'flow_checks',
     name: 'Chat Flow & Handoff Checks',
-    rule: 'Checks missing replies, incomplete or fake handoffs, premature closing, English/Hinglish reply mismatches, short replies ("ok", "ye", "?", an attachment) that switched the chat\'s language, and Sales leads missing after "which plan should I take" or a yes to the Sales Team question.',
+    rule: 'Checks missing replies, incomplete or fake handoffs, premature closing, English/Hinglish reply mismatches, short replies ("ok", "ye", "?", an attachment) that switched the chat\'s language, support offers outside 9 AM to 7 PM IST (the bot should ask "Did this resolve your query?" instead), 30-minute answers for delayed reviews, and Sales leads missing after "which plan should I take" or a yes to the Sales Team question.',
     objective: 'Catch broken conversation flow and handoff behaviour that other outcome-based queues miss.',
   },
 ];

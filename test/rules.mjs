@@ -30,6 +30,7 @@ function transcript(parts, variables = {}) {
 function makeChat({
   parts, humanTranscript = '', variables = {}, externalUserId = '9000000000',
   agentName = 'Apna Expert', interactionEnvironment = 'LIVE', evaluationTurns = null,
+  interactionDate = '2026-10-15T06:00:00.000Z',
 }) {
   sequence++;
   const headers = [
@@ -38,7 +39,7 @@ function makeChat({
     'evaluation.eval_version', 'evaluation.turn_by_turn',
   ];
   const row = [
-    `synthetic-${sequence}`, '2026-10-15T06:00:00.000Z', 'Synthetic employer', externalUserId,
+    `synthetic-${sequence}`, interactionDate, 'Synthetic employer', externalUserId,
     agentName, interactionEnvironment, evaluationTurns ? 'OK' : 'PENDING', humanTranscript, transcript(parts, variables),
     evaluationTurns ? 'synthetic-v1' : '', evaluationTurns ? JSON.stringify(evaluationTurns) : '',
   ];
@@ -351,5 +352,47 @@ const freshReview = makeChat({
   parts: ['User: why is my job not live', queryBlock('GET_JOB_STATUS', 'why is my job not live', reviewOutput('15 Oct 2026, 11:10 AM IST')), THIRTY],
 });
 assert.doesNotMatch(freshReview.audit.flow_checks?.reasons.join(' ') || '', /30-minute answer/);
+
+// Outside support hours (7:50 PM IST) a support offer is flagged; "Did this resolve your query?" and Sales offers are not
+const S88 = 'AI agent: The username and password login option is currently available only for Enterprise accounts and is not supported for regular accounts.\n\nTo access this feature, you can upgrade to an Enterprise account with a minimum purchase of ₹10,000.';
+const EVENING = '2026-10-15T14:20:00.000Z';
+const offerAfterHours = makeChat({
+  interactionDate: EVENING,
+  parts: ['User: can i login using my mail id', `${S88} Would you like to connect with our support team?`],
+});
+assert.equal(offerAfterHours.inSupportHours, false);
+assert.match(offerAfterHours.audit.flow_checks.reasons.join(' '), /Support offer outside support hours \(chat started 19:50 IST\)/);
+assert.equal(offerAfterHours.audit.flow_checks.alert, 'Support offer outside support hours');
+const offerInHours = makeChat({
+  parts: ['User: can i login using my mail id', `${S88} Would you like to connect with our support team?`],
+});
+assert.doesNotMatch(offerInHours.audit.flow_checks?.reasons.join(' ') || '', /Support offer outside support hours/);
+const resolveAfterHours = makeChat({
+  interactionDate: EVENING,
+  parts: ['User: can i login using my mail id', `${S88}\n\nDid this resolve your query?`],
+});
+assert.doesNotMatch(resolveAfterHours.audit.flow_checks?.reasons.join(' ') || '', /Support offer outside support hours/);
+const salesAfterHours = makeChat({
+  interactionDate: EVENING,
+  parts: ['User: which plan is best', 'AI agent: You can see our plans under View Plans on your dashboard.\n\nWould you like me to connect you with our Sales Team to find the best plan for your requirement?'],
+});
+assert.doesNotMatch(salesAfterHours.audit.flow_checks?.reasons.join(' ') || '', /Support offer outside support hours/);
+const linkAfterHours = makeChat({
+  interactionDate: EVENING,
+  parts: ['User: my accountant job is not live', "AI agent: I couldn't find your Accountant job. Could you please share its link?\n\nOpen the job on your dashboard and copy the link from your browser's address bar.\n\nIf you prefer, I can connect you with our support team instead. Would you like that?"],
+});
+assert.match(linkAfterHours.audit.flow_checks.reasons.join(' '), /Support offer outside support hours/);
+
+// "please call me" right after the Sales line gets the Sales call answer: a lead, not a missed handoff
+const salesCallQuestion = makeChat({
+  parts: [
+    'User: I want help choosing a plan',
+    'AI agent: Your request is already with our Sales team. They will reach out to you within 24 hours.',
+    'User: please call me today',
+    'AI agent: Yes, our Sales team will call you within 24 hours.',
+  ],
+});
+assert.match(salesCallQuestion.audit.agent_request.reasons.join(' '), /Sent to the Sales team as a lead/);
+assert.equal(salesCallQuestion.audit.agent_request.alert, null);
 
 console.log('All synthetic handoff and flow-rule tests passed.');

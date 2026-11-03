@@ -442,6 +442,17 @@ const RULES = {
       alert ||= 'Delayed review not handed off';
     });
 
+    // Outside support hours the bot never offers to connect to support: it asks "Did this resolve
+    // your query?" instead, and a no to that gets the handoff and the support-hours message.
+    // Judged by the chat's start time in IST.
+    if (c.timeIST && !c.inSupportHours) {
+      c.messages.forEach((m) => {
+        if (m.speaker !== 'Bot' || !BOT_LINES.supportOffer.test(m.text)) return;
+        reasons.push(`Support offer outside support hours (chat started ${c.timeIST} IST): "${snip(m.text)}"`);
+        alert ||= 'Support offer outside support hours';
+      });
+    }
+
     // Language, read the way the bot prompt reads it:
     // - a message with Devanagari or a clear Hindi word gets Hinglish, any other full message gets English;
     // - a short reply ("ok", "ye", "?", an attachment) keeps the language the chat was in;
