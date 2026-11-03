@@ -30,6 +30,11 @@ function matches(re, text) {
   return [...found];
 }
 
+// Frustration, abuse, legal or social-media words in a message (the Frustration queue's list)
+export function frustrationWords(text) {
+  return [...matches(FRUSTRATION_RE, String(text || ''))];
+}
+
 const snip = (t, n = 110) => {
   const s = String(t || '').replace(/\s+/g, ' ').trim();
   return s.length > n ? s.slice(0, n - 1) + '…' : s;

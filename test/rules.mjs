@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { parseBlueMachinesExport, mergeConversations } from '../js/data.js';
 import { runAudit } from '../js/audit.js';
 import { ANSWER_NO, TEST_USER_IDS } from '../js/config.js';
+import { agentSummary, csatCounts, csatDaily } from '../js/agents.js';
 
 const csvCell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
 let sequence = 0;
@@ -30,18 +31,18 @@ function transcript(parts, variables = {}) {
 function makeChat({
   parts, humanTranscript = '', variables = {}, externalUserId = '9000000000',
   agentName = 'Apna Expert', interactionEnvironment = 'LIVE', evaluationTurns = null,
-  interactionDate = '2026-10-15T06:00:00.000Z',
+  interactionDate = '2026-10-15T06:00:00.000Z', handoffAgentName = '',
 }) {
   sequence++;
   const headers = [
     'conversationId', 'interactionDate', 'userDisplayName', 'externalUserId',
     'agentName', 'interactionEnvironment', 'callAnalysisStatus', 'humanTranscript', 'transcript',
-    'evaluation.eval_version', 'evaluation.turn_by_turn',
+    'evaluation.eval_version', 'evaluation.turn_by_turn', 'handoffAgentName',
   ];
   const row = [
     `synthetic-${sequence}`, interactionDate, 'Synthetic employer', externalUserId,
     agentName, interactionEnvironment, evaluationTurns ? 'OK' : 'PENDING', humanTranscript, transcript(parts, variables),
-    evaluationTurns ? 'synthetic-v1' : '', evaluationTurns ? JSON.stringify(evaluationTurns) : '',
+    evaluationTurns ? 'synthetic-v1' : '', evaluationTurns ? JSON.stringify(evaluationTurns) : '', handoffAgentName,
   ];
   const csv = `${headers.map(csvCell).join(',')}\n${row.map(csvCell).join(',')}\n`;
   const records = parseBlueMachinesExport(csv);
@@ -492,4 +493,136 @@ const droppedAfterQuestion = makeChat({
 });
 assert.ok(droppedAfterQuestion.audit.early_drop);
 
-console.log('All synthetic handoff and flow-rule tests passed.');
+// ---------- Agent CSAT ----------
+const human = (lines) => lines.map(([t, text]) => `[2026-10-15T${t}.000Z] ${text}`).join('\n');
+const HANDBACK = 'AI agent: Hope the support team has resolved your queries. I can continue to help you from here';
+
+// Resolved after a reassignment, CSAT asked and answered Yes; the agent asked for a Yes
+const csatYes = makeChat({
+  parts: ['User: connect me to support', toolBlock('Request sent'), HANDBACK],
+  handoffAgentName: 'Falguni Bera',
+  humanTranscript: human([
+    ['06:00:00', '── agent_handoff.requested ──'],
+    ['06:00:05', '── agent_handoff.waiting ──'],
+    ['06:00:10', '── agent_handoff.assigned ──'],
+    ['06:00:20', '── agent_handoff.human_active ──'],
+    ['06:00:30', 'Rahul Kumar Sinha (Agent): Hi, welcome to APNA chat support.  {delivery=PROVIDER_CONFIRMED, policy=ALLOW, source=RELAY}'],
+    ['06:01:00', 'Customer: my job is not live  {delivery=ACCEPTED, policy=ALLOW, source=RELAY}'],
+    ['06:01:30', '── agent_handoff.reassigned ──'],
+    ['06:03:00', 'Falguni Bera (Agent): Your job is live now.'],
+    ['06:04:00', 'Falguni Bera (Agent): It was a pleasure assisting you today. Kindly consider clicking on "Yes" if I was able to solve your query in the feedback question you will receive shortly.'],
+    ['06:10:00', '── agent_handoff.resolved ──'],
+    ['06:10:00', '── agent_handoff.feedback_prompt ──'],
+    ['06:10:00', '── agent_handoff.ai_resumed ──'],
+    ['06:10:05', 'Customer: Yes  {delivery=ACCEPTED, policy=ALLOW, source=RELAY}'],
+  ]),
+});
+assert.equal(csatYes.agentSessions.length, 1);
+const sYes = csatYes.agentSessions[0];
+assert.equal(sYes.creditedAgent, 'Falguni Bera');
+assert.deepEqual(sYes.agents, ['Rahul Kumar Sinha', 'Falguni Bera']);
+assert.equal(sYes.reassignments, 1);
+assert.equal(sYes.outcome, 'resolved');
+assert.equal(sYes.csatAsked, 1);
+assert.equal(sYes.csatAnswer, 'yes');
+assert.equal(sYes.csatAnswerSeconds, 5);
+assert.equal(sYes.yesRequests, 1);
+assert.equal(sYes.firstReplySeconds, 30);
+assert.equal(sYes.handleSeconds, 580);
+assert.equal(sYes.longestWaitSeconds, 120);
+assert.equal(sYes.customerMessages, 1);
+assert.equal(sYes.timeIST, '11:30');
+assert.equal(sYes.inSupportHours, true);
+assert.equal(csatYes.csat, 'yes');
+assert.deepEqual(csatYes.supportAgents, ['Rahul Kumar Sinha', 'Falguni Bera']);
+
+// Asked, never answered; the employer then told the bot "Not resolved" and asked again: two agent chats
+const csatTwice = makeChat({
+  parts: ['User: connect me to support', toolBlock('Request sent'), HANDBACK, 'User: Not resolved', toolBlock('Request sent')],
+  handoffAgentName: 'Umair Mushtaq',
+  humanTranscript: human([
+    ['06:00:00', 'agent_handoff.requested'],
+    ['06:00:10', 'agent_handoff.human_active'],
+    ['06:00:40', 'Asif Laskar (Agent): Hello, how can I help?'],
+    ['06:05:00', 'agent_handoff.resolved'],
+    ['06:05:00', 'agent_handoff.feedback_prompt'],
+    ['06:05:00', 'agent_handoff.ai_resumed'],
+    ['06:06:00', 'agent_handoff.requested'],
+    ['06:06:30', 'Customer: still not live'],
+    ['06:07:00', 'agent_handoff.human_active'],
+    ['06:07:10', 'Umair Mushtaq (Agent): Checking.'],
+  ]),
+});
+assert.equal(csatTwice.agentSessions.length, 2);
+const [first, second] = csatTwice.agentSessions;
+assert.equal(first.creditedAgent, 'Asif Laskar');
+assert.equal(first.csatAnswer, 'no_answer');
+assert.equal(first.csatAnswerText, null);
+assert.equal(first.askedForSupportAgain, true);
+assert.equal(first.wroteToBotAfter, 'Not resolved');
+assert.equal(first.handbackReply, 'no');
+assert.equal(second.creditedAgent, 'Umair Mushtaq');
+assert.equal(second.outcome, 'open');
+assert.equal(second.csatAnswer, 'not_asked');
+assert.equal(second.customerMessages, 1);
+assert.equal(csatTwice.csat, null);
+assert.equal(csatTwice.csatAsked, 1);
+
+// Only a plain yes or no is an answer; "No" and "Not resolved" both count as No
+const answerOf = (text) => makeChat({
+  parts: ['User: connect me to support', toolBlock('Request sent')],
+  humanTranscript: human([
+    ['06:00:00', 'agent_handoff.requested'],
+    ['06:00:30', 'Gul Khan EXT (Agent): Done from our side.'],
+    ['06:01:00', 'agent_handoff.resolved'],
+    ['06:01:00', 'agent_handoff.feedback_prompt'],
+    ['06:01:10', `Customer: ${text}`],
+  ]),
+}).agentSessions[0];
+assert.equal(answerOf('No').csatAnswer, 'no');
+assert.equal(answerOf('Not resolved').csatAnswer, 'no');
+assert.equal(answerOf('ok thanks').csatAnswer, 'other');
+assert.equal(answerOf('ok thanks').csatAnswerText, 'ok thanks');
+
+// No agent ever joined, and an employer left waiting until the chat timed out
+const noAgent = makeChat({
+  parts: ['User: connect me to support', toolBlock('Request sent')],
+  humanTranscript: human([['06:00:00', 'agent_handoff.requested'], ['06:00:05', 'agent_handoff.waiting'], ['06:20:00', 'agent_handoff.timed_out']]),
+}).agentSessions[0];
+assert.equal(noAgent.creditedAgent, 'No agent joined');
+assert.equal(noAgent.outcome, 'timed_out');
+const leftWaiting = makeChat({
+  parts: ['User: connect me to support', toolBlock('Request sent')],
+  humanTranscript: human([
+    ['06:00:00', 'agent_handoff.requested'],
+    ['06:00:20', 'Pooja Shivapeti (Agent): Hello'],
+    ['06:01:00', 'Customer: are you there?'],
+    ['06:11:00', 'agent_handoff.timed_out'],
+  ]),
+}).agentSessions[0];
+assert.equal(leftWaiting.longestWaitSeconds, 600);
+assert.equal(leftWaiting.lastEmployerMessageUnanswered, true);
+
+// Per-agent and per-day numbers
+const all = [csatYes, csatTwice].flatMap((c) => c.agentSessions);
+const totals = csatCounts(all);
+assert.equal(totals.sessions, 3);
+assert.equal(totals.chats, 2);
+assert.equal(totals.csatAskedSessions, 2);
+assert.equal(totals.answered, 1);
+assert.equal(totals.yes, 1);
+assert.equal(totals.responseRatePct, 50);
+assert.equal(totals.yesPctOfAnswers, 100);
+assert.equal(totals.yesRequestSessions, 1);
+assert.equal(totals.notResolvedAfterHandback, 1);
+const byAgent = Object.fromEntries(agentSummary(all).map((r) => [r.agent, r]));
+assert.equal(byAgent['Falguni Bera'].sessions, 1);
+assert.equal(byAgent['Falguni Bera'].yes, 1);
+assert.equal(byAgent['Rahul Kumar Sinha'].sessions, 0);
+assert.equal(byAgent['Rahul Kumar Sinha'].involved, 1);
+assert.equal(byAgent['Rahul Kumar Sinha'].passedOn, 1);
+assert.equal(byAgent['Asif Laskar'].noAnswer, 1);
+assert.equal(byAgent['Asif Laskar'].cameBack, 1);
+assert.deepEqual(csatDaily(all).map((d) => [d.date, d.sessions, d.csatAskedSessions]), [['2026-10-15', 3, 2]]);
+
+console.log('All synthetic handoff, flow-rule and agent CSAT tests passed.');

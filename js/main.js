@@ -6,6 +6,7 @@ import { runAudit, explicitlyResolved, turnForUserMessage } from './audit.js';
 import { summarize, daily, topIntents, topTags } from './metrics.js';
 import { CATEGORIES, THRESHOLDS } from './config.js';
 import { dailyChart } from './chart.js';
+import { agentSummary, csatCounts, csatDaily, OUTCOME_LABEL, ANSWER_LABEL, NO_AGENT } from './agents.js';
 import { esc, fmtPct, label, fmtDate, toast, download, toCSV, parseCSV } from './ui.js';
 
 const ESC_KEY = 'apnaExpertAudit.escalations.v2';
@@ -34,8 +35,10 @@ const state = {
   escalations: loadEscalations(),
   filters: { from: '', to: '', q: '', cat: '', handoff: '', hideTests: true, engagedOnly: true },
   transcriptFilters: { userId: '', phoneNumber: '', conversationId: '', handoff: '', csat: '', sort: 'newest', hideTests: true },
+  agentFilters: { agent: '', answer: '', outcome: '', q: '', sort: 'chats' },
   page: 1,
   transcriptPage: 1,
+  agentPage: 1,
 };
 
 const app = document.getElementById('app');
@@ -323,7 +326,7 @@ function renderOverviewBody() {
     ['Human support chats', s.humanHandoffs, `${s.humanHandoffResolved} resolved · ${s.humanHandoffActive} active · ${s.humanHandoffClosedByUser} closed by user · ${s.humanHandoffTimedOut} timed out · ${s.handoffNoAgent} requested in support hours, no agent`],
     ['Employer said resolved', fmtPct(s.resolveYesPct), s.resolveAsked ? `of ${s.resolveAsked} asked "Did this resolve your query?"` : 'No one was asked yet'],
     ['Avg bot score', s.avgBotScorePct === null ? '–' : `${Math.round(s.avgBotScorePct)}%`, `evaluator turn scores, ${s.evaluated} evaluated chats`],
-    ['CSAT yes', s.csatGiven ? fmtPct(s.csatYesPct) : '–', s.csatGiven ? `of ${s.csatGiven} answers` : 'No CSAT answers in the data yet'],
+    ['CSAT yes', s.csatGiven ? fmtPct(s.csatYesPct) : '–', `${s.csatGiven} answers to ${s.csatAskedChats} feedback questions; details under Agent CSAT`],
     ['In an audit queue', s.flagged, `${fmtPct(s.chats ? (100 * s.flagged) / s.chats : null)} of chats`],
   ];
   const body = app.querySelector('#ov-body');
@@ -706,11 +709,11 @@ function exportEscalations(conversations = null) {
 function exportCSV(rows) {
   const head = ['conversation_id', 'date_ist', 'time_ist', 'conversation_seconds', 'employer_name', 'employer_number', 'apna_employer_id', 'company_name', 'entry_page', 'primary_intent',
     'employer_messages', 'bot_replies', 'handoff', 'handoff_detail', 'handoff_wait_seconds', 'outcome', 'explicitly_resolved', 'bot_score_pct', 'helpfulness_10',
-    'csat', 'audit_queues', 'needs_check', 'reasons', 'escalation_note', 'summary', 'transcript'];
+    'csat', 'support_agents', 'csat_asked', 'audit_queues', 'needs_check', 'reasons', 'escalation_note', 'summary', 'transcript'];
   const data = rows.map((c) => [
     c.id, c.dateIST, c.timeIST, c.durationSeconds, c.userName, c.phoneNumber, c.apnaEmployerId, c.companyName, c.entryPage, c.primaryIntent,
     c.userMessages, c.botReplies, c.handoffStatus, c.handoffDetail, c.handoffWaitSeconds, c.outcome, explicitlyResolved(c) ? 'yes' : 'no', c.botScorePct, c.helpfulness10,
-    c.csat, c.categories.map((k) => CATEGORIES.find((x) => x.key === k).name).join('; '), c.alerts.join('; '),
+    c.csat, (c.supportAgents || []).join('; '), c.csatAsked || 0, c.categories.map((k) => CATEGORIES.find((x) => x.key === k).name).join('; '), c.alerts.join('; '),
     c.categories.map((k) => `${SHORT[k]}: ${c.audit[k].reasons.join(' ')}`).join(' | '),
     state.escalations[c.id]?.note || '', c.summary,
     compactTranscript(c),
@@ -777,6 +780,7 @@ function renderDetail(id) {
           ${c.failureTags.length ? `<div class="chips" style="margin-top:8px">${c.failureTags.map((t) => `<span class="chip">${esc(t)}</span>`).join('')}</div>` : ''}
         </div>` : ''}
         ${checksHTML(c)}
+        ${agentSessionsHTML(c)}
         ${c.systemIssues.length ? `<div class="card pad"><h3>System issues</h3><ul style="margin:4px 0;padding-left:18px;color:var(--ink-2)">${c.systemIssues.map((s) => `<li>${esc([s.lookup, s.error, s.times ? `×${s.times}` : ''].filter(Boolean).join(' · '))}</li>`).join('')}</ul></div>` : ''}
         <div class="card pad esc-form">
           <h3>Support escalation</h3>
@@ -880,6 +884,17 @@ function renderRules() {
         <dt>Avg helpfulness</dt><dd>The evaluator's 0 to 10 helpfulness rating, averaged.</dd>
         <dt>CSAT yes</dt><dd>Share of yes answers to the post-chat feedback question, when it was asked.</dd>
       </dl>
+      <h2 style="margin-top:24px">Agent CSAT</h2>
+      <dl>
+        <dt>Agent chat</dt><dd>One per handoff request (agent_handoff.requested) in the BlueMachines human-support transcript. A chat with two requests has two agent chats.</dd>
+        <dt>Credited agent</dt><dd>The agent holding the chat at the end (BlueMachines handoffAgentName for the last request, otherwise the last agent who wrote). CSAT, outcome and timings count for this agent. Involved counts every agent who wrote at least once; Passed on counts chats an agent wrote in and someone else ended.</dd>
+        <dt>CSAT asked</dt><dd>BlueMachines sent the feedback question (agent_handoff.feedback_prompt), which happens when the agent resolves the chat.</dd>
+        <dt>CSAT answer</dt><dd>The employer's first message after the feedback question, before any new handoff request: a plain yes counts as Yes, a plain no or "not resolved" as No, anything else as Other reply. No message means Asked, no answer. If BlueMachines does not pass the employer's click into the transcript, the answer is missing here, so check the answer rate before judging an agent on Yes %.</dd>
+        <dt>Asked for a Yes</dt><dd>An agent message asking the employer to click Yes in the feedback question.</dd>
+        <dt>Not resolved after handback</dt><dd>The employer's first message to the bot after the agent handed the chat back was a plain no or "not resolved".</dd>
+        <dt>Came back</dt><dd>After the agent chat the employer asked for support again in the same chat or wrote to the bot.</dd>
+        <dt>Timings</dt><dd>First reply: handoff request to the agent's first message. Handle time: agent joined to resolved (resolved chats). Active time: the agent's first to last message. Longest wait: the longest gap between an employer message and the next agent message, including a wait still open when the chat ended.</dd>
+      </dl>
       <h2 style="margin-top:24px">Your escalations</h2>
       <p class="muted">${Object.keys(state.escalations).length} chats marked or imported in this browser.</p>
       <div class="row-actions">
@@ -903,6 +918,232 @@ function renderRules() {
   });
 }
 
+// ---------- agent CSAT ----------
+
+function istClock(iso) {
+  const t = Date.parse(iso || '');
+  return Number.isFinite(t) ? new Date(t + 5.5 * 3600 * 1000).toISOString().slice(11, 16) : '';
+}
+
+// "2026-11-03T08:59:19.331Z" -> "2026-11-03 14:29:19" (IST), for CSV exports
+function istStamp(iso) {
+  const t = Date.parse(iso || '');
+  return Number.isFinite(t) ? new Date(t + 5.5 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') : '';
+}
+
+function sessionsInRange() {
+  const f = state.filters;
+  return state.convs
+    .filter((c) => !(f.hideTests && c.isTest))
+    .flatMap((c) => c.agentSessions || [])
+    .filter((s) => (!f.from || s.dateIST >= f.from) && (!f.to || s.dateIST <= f.to));
+}
+
+function sessionsFiltered(all) {
+  const f = state.agentFilters;
+  const q = f.q.trim().toLowerCase();
+  return all.filter((s) => {
+    if (f.agent && s.creditedAgent !== f.agent && !s.agents.includes(f.agent)) return false;
+    if (f.answer && s.csatAnswer !== f.answer) return false;
+    if (f.outcome && s.outcome !== f.outcome) return false;
+    if (q && ![s.conversationId, s.employerName, s.employerId, s.phoneNumber, s.creditedAgent, ...s.agents, s.csatAnswerText]
+      .filter(Boolean).join(' ').toLowerCase().includes(q)) return false;
+    return true;
+  }).sort((a, b) => `${b.dateIST} ${b.timeIST}`.localeCompare(`${a.dateIST} ${a.timeIST}`));
+}
+
+const answerChip = (s) => {
+  const cls = { yes: 'good', no: 'alert', other: 'warn' }[s.csatAnswer] || '';
+  return `<span class="chip ${cls}">${esc(ANSWER_LABEL[s.csatAnswer])}</span>`;
+};
+
+function renderAgents(params) {
+  if (params.has('agent')) state.agentFilters.agent = params.get('agent');
+  const f = state.agentFilters;
+  const names = [...new Set(sessionsInRange().flatMap((s) => [s.creditedAgent, ...s.agents]))].sort();
+  app.innerHTML = `
+    <div class="section-head"><h2>Agent CSAT</h2><span class="muted small">Support agent chats from the BlueMachines human-support transcript, one row per handoff request.</span></div>
+    <div class="filters card pad" id="ag-filters">
+      ${dateFilters()}
+      <div class="field"><label for="ag-agent">Agent</label>
+        <select id="ag-agent"><option value="">All agents</option>${names.map((n) => `<option ${f.agent === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></div>
+      <div class="field"><label for="ag-answer">CSAT answer</label>
+        <select id="ag-answer"><option value="">Any</option>${Object.entries(ANSWER_LABEL).map(([k, v]) => `<option value="${k}" ${f.answer === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
+      <div class="field"><label for="ag-outcome">Outcome</label>
+        <select id="ag-outcome"><option value="">Any</option>${Object.entries(OUTCOME_LABEL).map(([k, v]) => `<option value="${k}" ${f.outcome === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
+      <div class="field"><label for="ag-q">Search</label><input type="search" id="ag-q" placeholder="Employer, number, conversation id or agent" value="${esc(f.q)}"></div>
+    </div>
+    <div id="ag-body"></div>`;
+  const root = app.querySelector('#ag-filters');
+  const set = (key, value) => {
+    f[key] = value;
+    state.agentPage = 1;
+    if (key === 'agent') history.replaceState(null, '', value ? `#/agents?agent=${encodeURIComponent(value)}` : '#/agents');
+    renderAgentsBody();
+  };
+  root.querySelector('#ag-agent').addEventListener('change', (e) => set('agent', e.target.value));
+  root.querySelector('#ag-answer').addEventListener('change', (e) => set('answer', e.target.value));
+  root.querySelector('#ag-outcome').addEventListener('change', (e) => set('outcome', e.target.value));
+  root.querySelector('#ag-q').addEventListener('input', (e) => set('q', e.target.value));
+  bindDateFilters(root, (rerenderFilters) => { if (rerenderFilters) renderAgents(new URLSearchParams()); else renderAgentsBody(); });
+  renderAgentsBody();
+}
+
+function renderAgentsBody() {
+  const body = app.querySelector('#ag-body');
+  const all = sessionsInRange();
+  if (!all.length) {
+    body.innerHTML = '<div class="section card pad muted">No agent chats in this range. Agent CSAT reads the humanTranscript column of the BlueMachines transcripts CSV.</div>';
+    return;
+  }
+  const f = state.agentFilters;
+  const scope = f.agent ? all.filter((s) => s.creditedAgent === f.agent) : all;
+  const t = csatCounts(scope);
+  const tiles = [
+    ['Agent chats', t.sessions, `${t.chats} chats · ${t.resolved} resolved · ${t.closedByEmployer} closed by employer · ${t.timedOut} timed out · ${t.open} open · ${t.noAgent + t.failed} no agent`],
+    ['CSAT asked', t.csatAskedTimes, `in ${t.csatAskedSessions} agent chats (${fmtPct(t.sessions ? (100 * t.csatAskedSessions) / t.sessions : null)}); ${t.resolvedNotAsked} resolved without it`],
+    ['Answers captured', t.answered, `${fmtPct(t.responseRatePct)} answer rate · ${t.noAnswer} asked, no answer`],
+    ['CSAT yes', fmtPct(t.yesPctOfAnswers), `${t.yes} yes · ${t.no} no · ${t.other} other reply`],
+    ['Yes of all asked', fmtPct(t.yesPctOfAsked), 'an unanswered question counts as not yes'],
+    ['Median first reply', fmtDuration(t.medianFirstReplySeconds), `from the handoff request; average ${fmtDuration(t.avgFirstReplySeconds)}`],
+    ['Median handle time', fmtDuration(t.medianHandleSeconds), `agent joined to resolved; active ${fmtDuration(t.medianActiveSeconds)}`],
+    ['Asked for a Yes', t.yesRequestSessions, `agent chats where the agent asked the employer to click Yes (${fmtPct(t.sessions ? (100 * t.yesRequestSessions) / t.sessions : null)})`],
+    ['Came back', t.cameBack, `${t.notResolvedAfterHandback} said not resolved after the handback · ${t.frustratedSessions} with frustration words`],
+  ];
+  const agents = agentSummary(all);
+  const sortKey = { chats: (r) => -r.sessions, yes: (r) => (r.yesPctOfAnswers ?? 101), answer: (r) => (r.responseRatePct ?? 101), reply: (r) => -(r.medianFirstReplySeconds ?? -1), back: (r) => -r.cameBack }[f.sort] || ((r) => -r.sessions);
+  agents.sort((a, b) => (a.agent === NO_AGENT) - (b.agent === NO_AGENT) || sortKey(a) - sortKey(b) || a.agent.localeCompare(b.agent));
+  const days = csatDaily(scope);
+  const rows = sessionsFiltered(all);
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  state.agentPage = Math.min(state.agentPage, pages);
+  const slice = rows.slice((state.agentPage - 1) * PAGE_SIZE, state.agentPage * PAGE_SIZE);
+  const pctCell = (v) => `<td class="num">${esc(fmtPct(v))}</td>`;
+  body.innerHTML = `
+    <div class="section tiles">
+      ${tiles.map(([l, v, sub]) => `<div class="card tile"><div class="label">${esc(l)}</div><div class="value num">${esc(v)}</div><div class="sub">${esc(sub)}</div></div>`).join('')}
+    </div>
+    <div class="section card pad small muted">CSAT asked means BlueMachines sent the feedback question when the agent resolved the chat. The answer is the employer's first message after it. ${t.csatAskedSessions ? `Answers were captured for ${t.answered} of ${t.csatAskedSessions} questions (${fmtPct(t.responseRatePct)}), so check the answer rate before judging an agent on Yes %.` : ''}</div>
+    <div class="section card">
+      <div class="pager" style="justify-content:space-between">
+        <b>Agents</b>
+        <span style="display:flex;gap:8px;align-items:center">
+          <label class="muted small" for="ag-sort">Sort</label>
+          <select id="ag-sort">
+            <option value="chats" ${f.sort === 'chats' ? 'selected' : ''}>Most agent chats</option>
+            <option value="yes" ${f.sort === 'yes' ? 'selected' : ''}>Lowest CSAT yes</option>
+            <option value="answer" ${f.sort === 'answer' ? 'selected' : ''}>Lowest answer rate</option>
+            <option value="reply" ${f.sort === 'reply' ? 'selected' : ''}>Slowest first reply</option>
+            <option value="back" ${f.sort === 'back' ? 'selected' : ''}>Most came back</option>
+          </select>
+          <button class="btn" id="ag-export-agents">Export agents CSV</button>
+        </span>
+      </div>
+      <div class="table-wrap"><table class="list">
+        <thead><tr><th>Agent</th><th class="num">Agent chats</th><th class="num">Involved</th><th class="num">Passed on</th><th class="num">Resolved</th><th class="num">Closed by employer</th><th class="num">Timed out</th><th class="num">Open</th>
+          <th class="num">CSAT asked</th><th class="num">Answered</th><th class="num">Yes</th><th class="num">No</th><th class="num">Other</th><th class="num">Answer rate</th><th class="num">CSAT yes</th><th class="num">Yes of asked</th>
+          <th class="num">Asked for a Yes</th><th class="num">Not resolved after handback</th><th class="num">Came back</th><th class="num">Median first reply</th><th class="num">Median handle time</th><th class="num">Longest wait</th><th>Dates (IST)</th></tr></thead>
+        <tbody>${agents.map((r) => `<tr class="row" data-agent="${esc(r.agent)}" style="${f.agent === r.agent ? 'background:var(--surface-2)' : ''}">
+          <td class="nowrap"><b>${esc(r.agent)}</b></td><td class="num">${r.sessions}</td><td class="num">${r.involved}</td><td class="num">${r.passedOn}</td>
+          <td class="num">${r.resolved}</td><td class="num">${r.closedByEmployer}</td><td class="num">${r.timedOut}</td><td class="num">${r.open}</td>
+          <td class="num">${r.csatAskedSessions}</td><td class="num">${r.answered}</td><td class="num">${r.yes}</td><td class="num">${r.no}</td><td class="num">${r.other}</td>
+          ${pctCell(r.responseRatePct)}${pctCell(r.yesPctOfAnswers)}${pctCell(r.yesPctOfAsked)}
+          <td class="num">${r.yesRequestSessions}</td><td class="num">${r.notResolvedAfterHandback}</td><td class="num">${r.cameBack}</td>
+          <td class="num">${esc(fmtDuration(r.medianFirstReplySeconds))}</td><td class="num">${esc(fmtDuration(r.medianHandleSeconds))}</td><td class="num">${esc(fmtDuration(r.maxLongestWaitSeconds))}</td>
+          <td class="when">${esc(r.firstDate ? `${fmtDate(r.firstDate)} to ${fmtDate(r.lastDate)}` : '–')}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </div>
+    <div class="section card">
+      <div class="pager" style="justify-content:space-between"><b>By day${f.agent ? ` · ${esc(f.agent)}` : ''}</b><span class="muted small">Day of the handoff request (IST)</span></div>
+      <div class="table-wrap"><table class="list">
+        <thead><tr><th>Date</th><th class="num">Agent chats</th><th class="num">Resolved</th><th class="num">CSAT asked</th><th class="num">Answered</th><th class="num">Yes</th><th class="num">No</th><th class="num">Other</th><th class="num">Answer rate</th><th class="num">CSAT yes</th><th class="num">Asked for a Yes</th><th class="num">Median first reply</th></tr></thead>
+        <tbody>${days.map((d) => `<tr><td class="when">${esc(fmtDate(d.date))}</td><td class="num">${d.sessions}</td><td class="num">${d.resolved}</td><td class="num">${d.csatAskedSessions}</td><td class="num">${d.answered}</td><td class="num">${d.yes}</td><td class="num">${d.no}</td><td class="num">${d.other}</td>${pctCell(d.responseRatePct)}${pctCell(d.yesPctOfAnswers)}<td class="num">${d.yesRequestSessions}</td><td class="num">${esc(fmtDuration(d.medianFirstReplySeconds))}</td></tr>`).join('')}</tbody>
+      </table></div>
+    </div>
+    <div class="section card">
+      <div class="pager" style="justify-content:space-between">
+        <span class="muted">${rows.length} agent chats${f.agent ? ` with ${esc(f.agent)} (credited or involved)` : ''}</span>
+        <button class="btn" id="ag-export-chats" ${rows.length ? '' : 'disabled'}>Export these chats to CSV</button>
+      </div>
+      <div class="table-wrap"><table class="list">
+        <thead><tr><th>Requested (IST)</th><th>Employer</th><th>Agent</th><th>Outcome</th><th>Times (IST)</th><th class="num">First reply</th><th class="num">Handle time</th><th class="num">Longest wait</th><th>CSAT</th><th>Asked for a Yes</th><th>After the agent chat</th></tr></thead>
+        <tbody>${slice.map((s) => `<tr class="row" data-id="${esc(s.conversationId)}">
+          <td class="when num">${esc(fmtDate(s.dateIST))}<br><span class="muted">${esc(s.timeIST)}${s.inSupportHours ? '' : ' · outside hours'}</span><br><span class="muted small">${esc(s.conversationId)}${s.sessionsInChat > 1 ? ` · request ${s.no} of ${s.sessionsInChat}` : ''}</span></td>
+          <td>${esc(s.employerName || '–')}<br><span class="muted small">${esc(s.employerId || '')}</span><br><span class="muted small num">${esc(s.phoneNumber || '')}</span></td>
+          <td><b>${esc(s.creditedAgent)}</b>${s.agents.filter((a) => a !== s.creditedAgent).length ? `<br><span class="muted small">also ${esc(s.agents.filter((a) => a !== s.creditedAgent).join(', '))}</span>` : ''}${s.reassignments ? `<br><span class="muted small">${s.reassignments} reassignment${s.reassignments > 1 ? 's' : ''}</span>` : ''}</td>
+          <td>${esc(OUTCOME_LABEL[s.outcome])}<br><span class="muted small">${s.agentMessages} agent · ${s.customerMessages} employer msgs</span></td>
+          <td class="small num nowrap">Requested ${esc(istClock(s.requestedAt) || '–')}<br>Assigned ${esc(istClock(s.assignedAt) || '–')}<br>First reply ${esc(istClock(s.firstAgentReplyAt) || '–')}<br>Ended ${esc(istClock(s.endAt) || '–')}</td>
+          <td class="num">${esc(fmtDuration(s.firstReplySeconds))}</td>
+          <td class="num">${esc(fmtDuration(s.handleSeconds))}</td>
+          <td class="num">${esc(fmtDuration(s.longestWaitSeconds))}${s.lastEmployerMessageUnanswered ? '<br><span class="chip warn">last message unanswered</span>' : ''}</td>
+          <td>${answerChip(s)}${s.csatAsked ? `<br><span class="muted small">asked ${esc(istClock(s.feedbackAt[0]))}${s.csatAsked > 1 ? ` (${s.csatAsked} times)` : ''}</span>` : ''}${s.csatAnswerText !== null ? `<br><span class="muted small">"${esc(truncate(s.csatAnswerText, 40))}" at ${esc(istClock(s.csatAnswerAt))}</span>` : ''}</td>
+          <td>${s.yesRequests ? `<span class="chip warn" title="${esc(s.yesRequestText || '')}">Asked ×${s.yesRequests}</span>` : '<span class="muted">–</span>'}</td>
+          <td class="small">${s.askedForSupportAgain ? 'Asked for support again<br>' : ''}${s.wroteToBotAfter ? `Wrote to the bot: "${esc(truncate(s.wroteToBotAfter, 50))}"` : ''}${s.frustration.length ? `<br><span class="chip alert">${esc(s.frustration.join(', '))}</span>` : ''}${!s.askedForSupportAgain && !s.wroteToBotAfter && !s.frustration.length ? '<span class="muted">–</span>' : ''}</td>
+        </tr>`).join('') || '<tr><td colspan="11" class="muted" style="padding:24px">No agent chats match these filters.</td></tr>'}</tbody>
+      </table></div>
+      ${pages > 1 ? `<div class="pager"><button class="btn" id="ag-prev" ${state.agentPage === 1 ? 'disabled' : ''}>Previous</button><span class="muted">Page ${state.agentPage} of ${pages}</span><button class="btn" id="ag-next" ${state.agentPage === pages ? 'disabled' : ''}>Next</button></div>` : ''}
+    </div>`;
+  body.querySelector('#ag-sort').addEventListener('change', (e) => { f.sort = e.target.value; renderAgentsBody(); });
+  body.querySelectorAll('tr.row[data-agent]').forEach((tr) => tr.addEventListener('click', () => {
+    f.agent = f.agent === tr.dataset.agent ? '' : tr.dataset.agent;
+    state.agentPage = 1;
+    renderAgents(new URLSearchParams(f.agent ? { agent: f.agent } : {}));
+    history.replaceState(null, '', f.agent ? `#/agents?agent=${encodeURIComponent(f.agent)}` : '#/agents');
+  }));
+  body.querySelectorAll('tr.row[data-id]').forEach((tr) => tr.addEventListener('click', () => { location.hash = `#/c/${encodeURIComponent(tr.dataset.id)}`; }));
+  body.querySelector('#ag-export-agents').addEventListener('click', () => exportAgentsCSV(agents));
+  body.querySelector('#ag-export-chats')?.addEventListener('click', () => exportAgentChatsCSV(rows));
+  body.querySelector('#ag-prev')?.addEventListener('click', () => { state.agentPage--; renderAgentsBody(); window.scrollTo(0, 0); });
+  body.querySelector('#ag-next')?.addEventListener('click', () => { state.agentPage++; renderAgentsBody(); window.scrollTo(0, 0); });
+}
+
+const round1 = (v) => (v === null || v === undefined ? '' : Math.round(v * 10) / 10);
+
+function exportAgentsCSV(agents) {
+  const f = state.filters;
+  const head = ['agent', 'agent_chats', 'chats', 'involved', 'passed_on', 'agent_messages', 'resolved', 'closed_by_employer', 'timed_out', 'open',
+    'csat_asked_chats', 'csat_asked_times', 'resolved_not_asked', 'answered', 'yes', 'no', 'other_reply', 'asked_no_answer', 'answer_rate_pct', 'csat_yes_pct', 'csat_no_pct', 'yes_of_asked_pct',
+    'asked_for_yes_chats', 'not_resolved_after_handback', 'came_back', 'with_frustration_words', 'reassigned_chats', 'last_message_unanswered',
+    'median_first_reply_seconds', 'avg_first_reply_seconds', 'median_handle_seconds', 'avg_handle_seconds', 'median_active_seconds', 'longest_wait_seconds', 'first_date_ist', 'last_date_ist'];
+  const data = agents.map((r) => [r.agent, r.sessions, r.chats, r.involved, r.passedOn, r.messages, r.resolved, r.closedByEmployer, r.timedOut, r.open,
+    r.csatAskedSessions, r.csatAskedTimes, r.resolvedNotAsked, r.answered, r.yes, r.no, r.other, r.noAnswer, round1(r.responseRatePct), round1(r.yesPctOfAnswers), round1(r.noPctOfAnswers), round1(r.yesPctOfAsked),
+    r.yesRequestSessions, r.notResolvedAfterHandback, r.cameBack, r.frustratedSessions, r.reassigned, r.unansweredAtEnd,
+    r.medianFirstReplySeconds, r.avgFirstReplySeconds, r.medianHandleSeconds, r.avgHandleSeconds, r.medianActiveSeconds, r.maxLongestWaitSeconds, r.firstDate, r.lastDate]);
+  const range = f.from || f.to ? `-${f.from || 'start'}-to-${f.to || 'now'}` : '';
+  download(`apna-expert-agent-csat${range}-${istToday()}.csv`, toCSV([head, ...data]));
+}
+
+function exportAgentChatsCSV(rows) {
+  const head = ['conversation_id', 'request_no', 'requests_in_chat', 'date_ist', 'time_ist', 'in_support_hours', 'employer_name', 'apna_employer_id', 'employer_number',
+    'credited_agent', 'agents_involved', 'messages_per_agent', 'reassignments', 'outcome', 'requested_at_ist', 'assigned_at_ist', 'agent_joined_at_ist', 'first_agent_reply_at_ist', 'last_agent_reply_at_ist', 'ended_at_ist',
+    'first_reply_seconds', 'assign_seconds', 'handle_seconds', 'active_seconds', 'total_seconds', 'longest_wait_seconds', 'last_employer_message_unanswered', 'agent_messages', 'employer_messages',
+    'csat_asked_times', 'csat_asked_at_ist', 'csat_answer', 'csat_answer_text', 'csat_answered_at_ist', 'csat_answer_seconds',
+    'asked_for_yes', 'asked_for_yes_text', 'asked_for_support_again', 'wrote_to_bot_after', 'reply_to_handback', 'frustration_words', 'agent_transcript'];
+  const data = rows.map((s) => [s.conversationId, s.no, s.sessionsInChat, s.dateIST, s.timeIST, s.inSupportHours ? 'yes' : 'no', s.employerName, s.employerId, s.phoneNumber,
+    s.creditedAgent, s.agents.join('; '), Object.entries(s.agentMessageCounts).map(([n, k]) => `${n}: ${k}`).join('; '), s.reassignments, OUTCOME_LABEL[s.outcome],
+    ...[s.requestedAt, s.assignedAt, s.humanActiveAt, s.firstAgentReplyAt, s.lastAgentReplyAt, s.endAt].map(istStamp),
+    s.firstReplySeconds, s.assignSeconds, s.handleSeconds, s.activeSeconds, s.totalSeconds, s.longestWaitSeconds, s.lastEmployerMessageUnanswered ? 'yes' : 'no', s.agentMessages, s.customerMessages,
+    s.csatAsked, s.feedbackAt.map(istStamp).join('; '), ANSWER_LABEL[s.csatAnswer], s.csatAnswerText, istStamp(s.csatAnswerAt), s.csatAnswerSeconds,
+    s.yesRequests, s.yesRequestText, s.askedForSupportAgain ? 'yes' : 'no', s.wroteToBotAfter, s.handbackReply ? ANSWER_LABEL[s.handbackReply] : '', s.frustration.join('; '), s.transcript]);
+  const agent = state.agentFilters.agent ? `-${state.agentFilters.agent.replace(/[^a-z0-9]+/gi, '-')}` : '';
+  download(`apna-expert-agent-chats${agent}-${istToday()}.csv`, toCSV([head, ...data]));
+}
+
+function agentSessionsHTML(c) {
+  const list = c.agentSessions || [];
+  if (!list.length) return '';
+  return `<div class="card pad"><h3>Agent CSAT</h3>${list.map((s) => `
+    <div style="padding:6px 0;border-top:1px solid var(--border)">
+      <div><b>${esc(s.creditedAgent)}</b> · ${esc(OUTCOME_LABEL[s.outcome])}${list.length > 1 ? ` · request ${s.no} of ${list.length}` : ''}</div>
+      ${s.agents.length > 1 ? `<div class="muted small">Agents: ${esc(s.agents.join(' → '))} (${s.reassignments} reassignment${s.reassignments === 1 ? '' : 's'})</div>` : ''}
+      <div class="muted small">Requested ${esc(istClock(s.requestedAt) || '–')} · first reply ${esc(istClock(s.firstAgentReplyAt) || '–')} (${esc(fmtDuration(s.firstReplySeconds))}) · ended ${esc(istClock(s.endAt) || '–')}${s.handleSeconds !== null ? ` · handle ${esc(fmtDuration(s.handleSeconds))}` : ''}</div>
+      <div style="margin-top:4px">CSAT ${answerChip(s)}${s.csatAsked ? ` <span class="muted small">asked ${esc(istClock(s.feedbackAt[0]))}${s.csatAnswerText !== null ? `, answered "${esc(truncate(s.csatAnswerText, 40))}" at ${esc(istClock(s.csatAnswerAt))}` : ''}</span>` : ''}${s.yesRequests ? ` <span class="chip warn" title="${esc(s.yesRequestText || '')}">Agent asked for a Yes ×${s.yesRequests}</span>` : ''}</div>
+      ${s.wroteToBotAfter ? `<div class="muted small">After the handback the employer wrote: "${esc(truncate(s.wroteToBotAfter, 80))}"</div>` : ''}
+    </div>`).join('')}
+    <p class="small" style="margin-top:6px"><a href="#/agents?agent=${encodeURIComponent(list[list.length - 1].creditedAgent)}">All chats of ${esc(list[list.length - 1].creditedAgent)}</a></p></div>`;
+}
+
 // ---------- routing ----------
 
 function route() {
@@ -919,6 +1160,7 @@ function route() {
   if (path.startsWith('/transcripts')) return renderTranscriptList();
   if (path.startsWith('/c/')) return renderDetail(decodeURIComponent(path.slice(3)));
   if (path.startsWith('/list')) return renderList(params);
+  if (path.startsWith('/agents')) return renderAgents(params);
   return renderOverview();
 }
 

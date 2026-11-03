@@ -113,7 +113,14 @@ export const ATTACHMENT_ONLY = /^\s*(?:\[attached (?:image|file)[^\]]*\]\s*)+$/i
 export const ANSWER_YES = /^\s*(yes|yeah|yep|haan|han|ha|haa|ji|ji haan|ok|okay|okk|k|sure|got it|thanks|thank you|thankyou|thx|resolved|done|solved|nothing|nothing else|no help required|no help needed|no more help|no need|ho gaya|hogaya|theek hai|thik hai|sahi hai)\b/i;
 export const ANSWER_NO = /^\s*(?!(?:no help required|no help needed|no more help|no need)\b)(no|nope|nahi|nahin|nhi|nai|ni|na|not really|not resolved|still not|abhi bhi nahi|nahi hua|nhi hua)\b/i;
 
-export const ACKNOWLEDGEMENT = /^\s*(ok|okay|okk|k|sure|thanks|thank you|thankyou|thx|got it|nothing|nothing else)\b/i;
+// Agent CSAT: the employer's first message after the feedback question (agent_handoff.feedback_prompt).
+// Only a plain yes or no counts as an answer; any other first message is kept as "Other" with its text.
+export const CSAT_YES = /^\s*(?:yes|y|yess|yes sir|yes mam|yes resolved|resolved|haan|han|ha|haa|ji|ji haan|👍)\s*[.!]*\s*$/iu;
+export const CSAT_NO = /^\s*(?:no|n|nope|nahi|nahin|nhi|na|not resolved|nahi hua|nhi hua)\s*[.!]*\s*$/i;
+// An agent message asking the employer to answer Yes to the feedback question ("Kindly consider clicking on "Yes"")
+export const AGENT_YES_REQUEST = /(?:click(?:ing)?|select(?:ing)?|press(?:ing)?|choos(?:e|ing)|tap(?:ping)?)\s+(?:on\s+)?["“'‘]?\s*yes\b|positive feedback|good rating|5 star rating|rate us/i;
+
+export const ACKNOWLEDGEMENT =/^\s*(ok|okay|okk|k|sure|thanks|thank you|thankyou|thx|got it|nothing|nothing else)\b/i;
 export const NO_REPLY_AFTER_CLOSING = /^\s*(ok|okay|okk|k|ko|thanks|thank you|thankyou|thx|bye|bye bye|yes|no|no thanks|done|nothing|nothing else|no help required|no more help|can you close|theek hai|thik hai|shukriya|dhanyavaad|ji)[.!]*\s*$/i;
 export const EMOJI_ONLY = /^\s*(?:\p{Extended_Pictographic}|\p{Emoji_Presentation}|\uFE0F|\u200D)+\s*$/u;
 export const GREETING_ONLY = /^\s*(hi|hai|hii)\s*[!.]*\s*$/i;

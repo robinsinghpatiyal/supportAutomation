@@ -189,6 +189,7 @@ table.list td { padding: 10px 12px; border-bottom: 1px solid var(--border); vert
 table.list tr.row { cursor: pointer; }
 table.list tr.row:hover td { background: var(--surface-2); }
 table.list .when { white-space: nowrap; }
+table.list .nowrap { white-space: nowrap; }
 table.list .first-msg { color: var(--ink-2); max-width: 360px; }
 .pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding: 10px 12px; }
 

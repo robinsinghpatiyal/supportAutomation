@@ -9,6 +9,7 @@
 
 import { BOT_LINES, TEST_CONVERSATION_PATTERNS, TEST_USER_IDS, ANSWER_NO, ANSWER_YES, SUPPORT_HOURS_IST } from './config.js';
 import { parseCSV } from './csv.js';
+import { agentSessions, chatCsat } from './agents.js';
 
 const ANSWER = { yes: ANSWER_YES, no: ANSWER_NO };
 
@@ -185,20 +186,31 @@ function blueMachinesTranscript(raw) {
 }
 
 // "[time] Name (Agent): text {delivery=...}" / "[time] Customer: text {delivery=...}"
-// -> spoken support messages. Handoff lifecycle event lines are intentionally omitted.
+// -> spoken support messages. Handoff lifecycle event lines are left out (they used to be glued onto the message above).
 function blueMachinesHumanTranscript(raw) {
-  const messages = [];
+  return blueMachinesHumanTimeline(raw)
+    .filter((item) => item.type === 'message')
+    .map(({ speaker, name, text, at }) => ({ speaker, name, text, at }));
+}
+
+// The human-support part in file order, handoff events and messages together, each with its time:
+// [{ type: 'event', at, event } | { type: 'message', at, speaker: 'Agent'|'User', name, text }]
+function blueMachinesHumanTimeline(raw) {
+  const items = [];
   let current = null;
   const flush = () => {
     if (!current) return;
-    const text = current.lines.join('\n')
-      .replace(/\s+\{delivery=[^}]*\}\s*$/i, '')
-      .trim();
-    if (text) messages.push({ speaker: current.speaker, name: current.name, text, at: current.at });
+    const text = current.lines.join('\n').replace(/\s+\{delivery=[^}]*\}\s*$/i, '').trim();
+    if (text) items.push({ type: 'message', at: current.at, speaker: current.speaker, name: current.name, text });
     current = null;
   };
-
   for (const line of String(raw || '').split(/\r?\n/)) {
+    const event = line.match(/^\[([^\]]+)\]\s+(?:[─-]+\s*)?agent_handoff\.([a-z_]+)/i);
+    if (event) {
+      flush();
+      items.push({ type: 'event', at: event[1], event: event[2].toLowerCase() });
+      continue;
+    }
     const match = line.match(/^\[([^\]]+)\]\s+(.+?):\s*(.*)$/);
     if (match) {
       flush();
@@ -217,7 +229,7 @@ function blueMachinesHumanTranscript(raw) {
     }
   }
   flush();
-  return messages;
+  return items;
 }
 
 function blueMachinesHandoffEvents(raw) {
@@ -242,17 +254,6 @@ function preloadedJobs(value) {
   if (!Array.isArray(list)) return [];
   return list.filter((job) => job && typeof job === 'object')
     .map((job) => ({ id: job.id ?? null, title: job.title ?? null, status: job.status ?? null }));
-}
-
-// Human handoff feedback is recorded after a feedback_prompt event, but older
-// evaluator payloads can still say CSAT was not given. Prefer the explicit response.
-function blueMachinesHumanCsat(raw) {
-  const match = String(raw || '').match(/agent_handoff\.feedback_prompt[\s\S]*?\[[^\]]+\]\s+(?:Customer|User|Employer):\s*([^\n]+)/i);
-  if (!match) return null;
-  const answer = match[1].replace(/\s+\{delivery=[^}]*\}\s*$/i, '').trim();
-  if (ANSWER_YES.test(answer)) return 'yes';
-  if (ANSWER_NO.test(answer)) return 'no';
-  return null;
 }
 
 function booleanCell(value) {
@@ -311,6 +312,7 @@ export function parseBlueMachinesExport(text) {
       createdAt: get('interactionDate'),
       transcript: blueMachinesTranscript(rawTranscript),
       humanTranscript: blueMachinesHumanTranscript(humanTranscript),
+      humanTimeline: blueMachinesHumanTimeline(humanTranscript),
       handoffEvents: blueMachinesHandoffEvents(humanTranscript),
       handoffLog: blueMachinesHandoffLog(humanTranscript),
       toolCalls: blueMachinesToolCalls(rawTranscript),
@@ -337,7 +339,6 @@ export function parseBlueMachinesExport(text) {
         handoffRequestedAt: get('handoffRequestedAt') || null,
         handoffHumanActiveAt: get('handoffHumanActiveAt') || null,
         handoffResolvedAt: get('handoffResolvedAt') || null,
-        csat: blueMachinesHumanCsat(humanTranscript),
         workflowId: get('workflowId') || null,
         workflowExecutionId: get('workflowExecutionId') || null,
       },
@@ -475,6 +476,7 @@ function fromRaw(rec) {
     entryPage: str(ev && ev.entry_page) || str(variables.apnaSupportPage),
     messages: parseTranscript(transcriptText),
     humanMessages: Array.isArray(rec.humanTranscript) ? rec.humanTranscript : [],
+    humanTimeline: Array.isArray(rec.humanTimeline) ? rec.humanTimeline : [],
     toolCalls: Array.isArray(rec.toolCalls) ? rec.toolCalls : [],
     handoffEvents: Array.isArray(rec.handoffEvents) ? rec.handoffEvents : [],
     handoffLog: Array.isArray(rec.handoffLog) ? rec.handoffLog : [],
@@ -558,6 +560,7 @@ function fromFlat(rec) {
     entryPage: str(rec.entry_page),
     messages,
     humanMessages: [],
+    humanTimeline: [],
     toolCalls: [],
     handoffEvents: [],
     humanHandoff: !!(rec.human_transcript_json && rec.human_transcript_json.length),
@@ -687,6 +690,12 @@ function enrich(c) {
     || TEST_USER_IDS.has(c.apnaEmployerId || '')
     || /test/i.test(c.agentName || '')
     || !!(c.interactionEnvironment && c.interactionEnvironment.toUpperCase() !== 'LIVE');
+  // Agent sessions and CSAT from the human-support transcript (BlueMachines CSV only).
+  // The employer's own yes or no to the feedback question wins over the evaluator's csat field.
+  c.agentSessions = agentSessions(c);
+  c.supportAgents = [...new Set(c.agentSessions.flatMap((s) => s.agents))];
+  c.csatAsked = c.agentSessions.reduce((t, s) => t + s.csatAsked, 0);
+  c.csat = chatCsat(c.agentSessions) || c.csat;
   c.searchText = [c.id, c.apnaEmployerId, c.employerId, c.userName, c.phoneNumber, c.companyName, c.sessionId, c.primaryIntent,
     ...msgs.map((m) => m.text), ...humanMsgs.map((m) => m.text)].filter(Boolean).join(' ').toLowerCase();
   return c;

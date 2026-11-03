@@ -48,6 +48,7 @@ export function summarize(convs) {
     avgBotScorePct: avg(evaluated.map((c) => c.botScorePct).filter((x) => x !== null)),
     avgHelpfulness: avg(evaluated.map((c) => c.helpfulness10).filter((x) => x !== null)),
     csatGiven: csatGiven.length,
+    csatAskedChats: convs.filter((c) => c.csatAsked > 0).length,
     csatYesPct: pct(csatGiven.filter((c) => c.csat === 'yes').length, csatGiven.length),
     flagged: convs.filter((c) => c.categories.length).length,
     categoryCounts,
