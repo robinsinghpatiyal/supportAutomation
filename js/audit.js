@@ -126,6 +126,14 @@ function istToMs(text) {
   return Date.UTC(Number(m[3]), MONTHS[m[2].toLowerCase()], Number(m[1]), hour, Number(m[5])) - 330 * 60000;
 }
 
+// When a lookup ran: the backend's own timestamp in its output, else the chat start
+function callTimeMs(c, call) {
+  const t = String(call.output || '').replace(/\\+"/g, '"').match(/"timestamp"\s*:\s*"(\d{4}-\d{2}-\d{2}T[^"]+?)"/);
+  const ms = t ? Date.parse(/(?:Z|[+-]\d\d:?\d\d)$/.test(t[1]) ? t[1] : `${t[1]}Z`) : NaN;
+  if (Number.isFinite(ms)) return ms;
+  return c.createdAt instanceof Date ? c.createdAt.getTime() : null;
+}
+
 // Was a Sales lead (CREATE_LEAD) made for the employer's message at index i, or earlier in the chat?
 // Returns null when the export has no tool data to tell.
 function leadMadeBy(c, i) {
@@ -329,6 +337,11 @@ const RULES = {
     if (c.userMessages > THRESHOLDS.highVolumeUserMessages) return null;
     if (c.handoff || explicitlyResolved(c) || c.lastSpeaker !== 'Bot') return null;
     const last = [...c.messages].reverse().find((m) => m.speaker === 'Bot');
+    // "ok" after an answer, then only "Did this resolve your query?": the employer was done, not dropped
+    const lastUser = [...c.messages].reverse().find((m) => m.speaker === 'User');
+    const onlyResolveQuestion = last && BOT_LINES.resolveQuestion.test(last.text)
+      && last.text.replace(BOT_LINES.resolveQuestion, '').replace(/[\s?.!]/g, '') === '';
+    if (onlyResolveQuestion && lastUser && ACKNOWLEDGEMENT.test(lastUser.text)) return null;
     return { reasons: [`Employer left after ${c.botReplies} bot replies and ${c.userMessages} message(s) of their own, with no resolution or handoff. Last bot reply: "${snip(last && last.text)}"`] };
   },
 
@@ -362,11 +375,29 @@ const RULES = {
       }
     });
 
+    // Freshchat can fail a handoff at once (BlueMachines logs failed, then ai_resumed). The bot then
+    // gets no result and usually says nothing, so the employer is left with no reply in that turn.
+    const log = c.handoffLog || [];
+    const outcomes = [];
+    log.forEach((event, k) => {
+      if (event === 'requested') outcomes.push(log.slice(k + 1).find((next) => next !== 'requested' && next !== 'waiting') || null);
+    });
+    const handoffCalls = (c.toolCalls || []).filter((call) => call.tool === 'agent_handoff');
+    const failedSilent = new Set();
+    handoffCalls.forEach((call, k) => {
+      const failed = handoffCalls.length === outcomes.length ? outcomes[k] === 'failed' : log.includes('failed');
+      if (!failed || String(call.output || '').trim() || call.messageIndex < 0 || failedSilent.has(call.messageIndex)) return;
+      if (repliesAfter(c.messages, call.messageIndex).some((m) => m.speaker === 'Bot' || m.speaker === 'Agent')) return;
+      failedSilent.add(call.messageIndex);
+      reasons.push(`No reply after a failed handoff: Freshchat failed the request, the bot got no result and said nothing after "${snip(c.messages[call.messageIndex]?.text)}".`);
+      alert ||= 'No reply after a failed handoff';
+    });
+
     // A handoff call that produced no later bot or agent message is a separate operational failure.
     handoffTriggers(c).forEach((i) => {
       const visibleAfter = c.messages.slice(i + 1).some((m) => m.speaker === 'Bot' || m.speaker === 'Agent')
         || (c.humanMessages || []).some((m) => m.speaker === 'Agent');
-      if (visibleAfter) return;
+      if (visibleAfter || failedSilent.has(i)) return;
       const detail = c.handoffDetail ? ` ${c.handoffDetail}.` : '';
       const waited = c.handoffWaitSeconds === null ? '' : ` Waited ${c.handoffWaitSeconds} s.`;
       reasons.push(`No reply after the handoff call.${detail}${waited}`);
@@ -422,21 +453,34 @@ const RULES = {
       }
     });
 
-    // A review under way for more than 30 minutes goes to a human; the 30-minute answer is wrong.
-    // Measured from the chat start, so the real wait is a little longer than the one reported.
-    const startMs = c.createdAt instanceof Date ? c.createdAt.getTime() : null;
+    // A review under way for 30 minutes or more goes to a human, so the 30-minute answer is wrong;
+    // a fresher one gets the 30-minute answer, so a handoff for it is wrong. Measured at the lookup's
+    // own timestamp (else the chat start, which makes the wait look a little shorter than it was).
     const flaggedReplies = new Set();
+    const flaggedFresh = new Set();
     (c.toolCalls || []).filter((call) => call.tool === 'apna_chat_query').forEach((call) => {
       const out = String(call.output || '').replace(/\\+"/g, '"');
       if (!/"status"\s*:\s*"under_review"/.test(out)) return;
       const since = out.match(/"under_review_since"\s*:\s*"([^"]+)"/);
       const sinceMs = since ? istToMs(since[1]) : null;
-      if (sinceMs === null || startMs === null) return;
-      const minutes = Math.round((startMs - sinceMs) / 60000);
-      if (minutes <= 30) return;
+      const atMs = callTimeMs(c, call);
+      if (sinceMs === null || atMs === null) return;
+      const minutes = Math.round((atMs - sinceMs) / 60000);
+      if (minutes < 30) {
+        const employerText = String(c.messages[call.messageIndex]?.text || '');
+        const handedOff = (c.toolCalls || []).some((h) => h.tool === 'agent_handoff' && h.messageIndex === call.messageIndex);
+        const saysItIsLong = /\b(hours?|hrs?|days?|din|ghante?|ghanta|since|yesterday|kal|morning|subah|long|der|minutes?|mins?)\b/i.test(employerText);
+        const askedForHuman = matches(AGENT_RE, employerText.replace(TEAM_SALUTATION, '')).length > 0;
+        const sentBefore = c.messages.slice(0, call.messageIndex).some((m) => m.speaker === 'Bot' && BOT_LINES.review30.test(m.text));
+        if (minutes < 0 || !handedOff || saysItIsLong || askedForHuman || sentBefore || flaggedFresh.has(call.messageIndex)) return;
+        flaggedFresh.add(call.messageIndex);
+        reasons.push(`Handoff for a review only ${minutes} minutes old (since ${since[1]}): the 30-minute answer was due.`);
+        alert ||= 'Fresh review handed off';
+        return;
+      }
       const reply = repliesAfter(c.messages, call.messageIndex).find((next) => next.speaker === 'Bot');
-      if (!reply || flaggedReplies.has(reply) || !BOT_LINES.review30.test(reply.text)) return;
-      flaggedReplies.add(reply);
+      if (!reply || flaggedReplies.has(reply.index) || !BOT_LINES.review30.test(reply.text)) return;
+      flaggedReplies.add(reply.index);
       const waited = minutes >= 120 ? `${Math.floor(minutes / 60)} hours` : `${minutes} minutes`;
       reasons.push(`30-minute answer for a review under way for ${waited} (since ${since[1]}): "${snip(reply.text)}"`);
       alert ||= 'Delayed review not handed off';
@@ -451,6 +495,54 @@ const RULES = {
         reasons.push(`Support offer outside support hours (chat started ${c.timeIST} IST): "${snip(m.text)}"`);
         alert ||= 'Support offer outside support hours';
       });
+    }
+
+    // An account whose documents are submitted (state "submitted", nothing pending) is under review:
+    // never S82 ("Your verification is not complete yet") or upload steps.
+    const flaggedUpload = new Set();
+    (c.toolCalls || []).filter((call) => call.tool === 'apna_chat_query').forEach((call) => {
+      const out = String(call.output || '').replace(/\\+"/g, '"');
+      if (!/"account_verification"\s*:\s*\{[^{}]*"state"\s*:\s*"submitted"/.test(out)) return;
+      if (/"pending_steps"\s*:\s*\[\s*[{"]/.test(out) || /"verification_status"\s*:\s*"(PENDING|COMPLETED_PENDING)"/.test(out)) return;
+      const reply = repliesAfter(c.messages, call.messageIndex).find((next) => next.speaker === 'Bot');
+      if (!reply || flaggedUpload.has(reply.index) || !BOT_LINES.uploadSteps.test(reply.text)) return;
+      flaggedUpload.add(reply.index);
+      reasons.push(`Upload steps for documents already submitted (account state "submitted"): "${snip(reply.text)}"`);
+      alert ||= 'Upload steps for documents already submitted';
+    });
+
+    // A file or image shared while a job is under review (preloaded or seen in this chat) goes to a human.
+    const underReviewBy = (i) => (c.preloadJobs || []).some((job) => /under[_ ]review/i.test(String(job.status || '')))
+      || (c.toolCalls || []).some((call) => call.tool === 'apna_chat_query' && call.messageIndex <= i
+        && /"status"\s*:\s*"under_review"/.test(String(call.output || '').replace(/\\+"/g, '"')));
+    c.messages.forEach((m, i) => {
+      if (m.speaker !== 'User' || !/\[attached (?:image|file)/i.test(m.text) || !underReviewBy(i)) return;
+      const reply = repliesAfter(c.messages, i).find((next) => next.speaker === 'Bot');
+      if (!reply || !BOT_LINES.fileLine.test(reply.text) || handoffIn(c, i, true).tool) return;
+      reasons.push(`File shared while a job is under review got the file line, not a handoff: "${snip(reply.text)}"`);
+      alert ||= 'File with a job under review not handed off';
+    });
+
+    // The support-hours message goes out once a chat; later closed results get the offline message.
+    const supportHoursSent = c.messages.filter((m) => m.speaker === 'Bot' && BOT_LINES.supportHours.test(m.text)).length;
+    if (supportHoursSent > 1) {
+      reasons.push(`Support-hours message sent ${supportHoursSent} times: it goes out once a chat, and later closed results get the offline message.`);
+    }
+
+    // One lead per chat, and the lead turn never gets "Your request is already with our Sales team"
+    // (that line is only for a later ask): it gets the answer with its Sales question, or the Sales
+    // confirmation after a yes.
+    const leadCalls = (c.toolCalls || []).filter((call) => call.tool === 'apna_chat_query' && /CREATE_LEAD/.test(String(call.input || '')));
+    if (leadCalls.length > 1) {
+      reasons.push(`${leadCalls.length} lead calls in one chat: one lead per chat.`);
+      alert ||= 'Second lead call';
+    }
+    if (leadCalls.length && leadCalls[0].messageIndex >= 0) {
+      const reply = repliesAfter(c.messages, leadCalls[0].messageIndex).find((next) => next.speaker === 'Bot');
+      if (reply && BOT_LINES.leadDone.test(reply.text)) {
+        reasons.push(`"Your request is already with our Sales team" in the turn the lead was made, after "${snip(c.messages[leadCalls[0].messageIndex]?.text)}": the answer with its Sales question, or the Sales confirmation after a yes, was due.`);
+        alert ||= 'Wrong Sales line in the lead turn';
+      }
     }
 
     // Language, read the way the bot prompt reads it:

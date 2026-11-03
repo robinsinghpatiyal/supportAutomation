@@ -395,4 +395,101 @@ const salesCallQuestion = makeChat({
 assert.match(salesCallQuestion.audit.agent_request.reasons.join(' '), /Sent to the Sales team as a lead/);
 assert.equal(salesCallQuestion.audit.agent_request.alert, null);
 
+// Freshchat fails a handoff at once (failed, ai_resumed): the bot got no result and said nothing
+const failedHandoff = makeChat({
+  parts: ['User: connect me to a human', toolBlock(undefined, 2000), 'User: hello?', 'AI agent: Hello! How can I help you today?'],
+  humanTranscript: [
+    '[2026-10-15T06:01:00.000Z] ── agent_handoff.requested ──',
+    '[2026-10-15T06:01:02.000Z] ── agent_handoff.failed ──',
+    '[2026-10-15T06:01:02.000Z] ── agent_handoff.ai_resumed ──',
+  ].join('\n'),
+});
+assert.equal(failedHandoff.handoffDetail, 'Freshchat failed the request and the bot resumed, with no result sent to the bot');
+assert.match(failedHandoff.audit.flow_checks.reasons.join(' '), /No reply after a failed handoff: .*connect me to a human/);
+assert.equal(failedHandoff.audit.flow_checks.alert, 'No reply after a failed handoff');
+
+// A review under 30 minutes old gets the 30-minute answer; a handoff for it is flagged (lookup at 11:30 AM IST)
+const freshOutput = (since) => JSON.stringify({ intent: 'GET_JOB_STATUS', context: { job: { status: 'under_review', under_review_since: since, verification: { verification_status: 'APPROVED', pending_steps: [] } } }, timestamp: '2026-10-15T06:00:00.000Z' });
+const joinedAgent = ['[2026-10-15T06:01:00.000Z] agent_handoff.requested', '[2026-10-15T06:01:02.000Z] agent_handoff.human_active', '[2026-10-15T06:01:03.000Z] Priya (Agent): Hello'].join('\n');
+const freshHandoff = makeChat({
+  parts: ['User: why is my job not live', queryBlock('GET_JOB_STATUS', 'why is my job not live', freshOutput('15 Oct 2026, 11:25 AM IST')), toolBlock(undefined, 2000)],
+  humanTranscript: joinedAgent,
+});
+assert.match(freshHandoff.audit.flow_checks.reasons.join(' '), /Handoff for a review only 5 minutes old/);
+assert.equal(freshHandoff.audit.flow_checks.alert, 'Fresh review handed off');
+const freshButLong = makeChat({
+  parts: ['User: my job is under review since 2 hours', queryBlock('GET_JOB_STATUS', 'my job is under review since 2 hours', freshOutput('15 Oct 2026, 11:25 AM IST')), toolBlock(undefined, 2000)],
+  humanTranscript: joinedAgent,
+});
+assert.doesNotMatch(freshButLong.audit.flow_checks?.reasons.join(' ') || '', /Handoff for a review only/);
+
+// An account whose documents are submitted never gets upload steps
+const verificationOutput = (state) => JSON.stringify({ intent: 'GET_VERIFICATION', context: { account_verification: { pending_steps: [], reason: null, state } } });
+const S82 = 'AI agent: Your verification is not complete yet.\n\nTo complete it, upload a company document and finish your personal KYC (Aadhaar or PAN with a selfie) on your dashboard.';
+const submittedUpload = makeChat({
+  parts: ['User: is my verification done', queryBlock('GET_VERIFICATION', 'is my verification done', verificationOutput('submitted')), S82],
+});
+assert.match(submittedUpload.audit.flow_checks.reasons.join(' '), /Upload steps for documents already submitted/);
+const unverifiedUpload = makeChat({
+  parts: ['User: is my verification done', queryBlock('GET_VERIFICATION', 'is my verification done', verificationOutput('unverified')), S82],
+});
+assert.doesNotMatch(unverifiedUpload.audit.flow_checks?.reasons.join(' ') || '', /Upload steps for documents already submitted/);
+
+// A file shared while a preloaded job is under review goes to a human, never the file line
+const FILE_LINE = 'AI agent: I am unable to read files shared in this chat. Could you please tell me how I can help you?';
+const fileUnderReview = makeChat({
+  parts: ['User: [Attached image: image.png (85 KB)]', FILE_LINE],
+  variables: { jobs: JSON.stringify([{ id: 932750684, title: 'Accountant', status: 'under_review' }]) },
+});
+assert.equal(fileUnderReview.preloadJobs[0].status, 'under_review');
+assert.equal(fileUnderReview.audit.flow_checks.alert, 'File with a job under review not handed off');
+const fileLiveJob = makeChat({
+  parts: ['User: [Attached image: image.png (85 KB)]', FILE_LINE],
+  variables: { jobs: JSON.stringify([{ id: 932750684, title: 'Accountant', status: 'active' }]) },
+});
+assert.doesNotMatch(fileLiveJob.audit.flow_checks?.reasons.join(' ') || '', /File shared while a job is under review/);
+
+// The support-hours message goes out once a chat
+const GATE = 'AI agent: Our chat support team is available from 9:00 AM to 7:00 PM IST.\n\nI can help you with any issues right now, or you can email us at employersupport@apna.co and the team will get back to you.\n\nWhat would you like to do?';
+const CLOSED_RESULT = 'Human support is closed right now and reopens at 9:00 AM';
+const gateTwice = makeChat({
+  interactionDate: EVENING,
+  parts: ['User: connect to human agent', toolBlock(CLOSED_RESULT), GATE, 'User: why is it taking so long', toolBlock(CLOSED_RESULT), GATE],
+});
+assert.match(gateTwice.audit.flow_checks.reasons.join(' '), /Support-hours message sent 2 times/);
+
+// One lead per chat, and never "already with our Sales team" in the lead turn
+const leadOutput = JSON.stringify({ intent: 'CREATE_LEAD', context: { lead_already_exists: true, lead_created: false } });
+const LEAD_DONE = 'AI agent: Your request is already with our Sales team. They will reach out to you within 24 hours.';
+const leadTwice = makeChat({
+  parts: ['User: yearly offer plan', queryBlock('CREATE_LEAD', 'yearly offer plan', leadOutput), LEAD_DONE,
+    'User: kindly payment details', queryBlock('CREATE_LEAD', 'kindly payment details', leadOutput), LEAD_DONE],
+});
+assert.match(leadTwice.audit.flow_checks.reasons.join(' '), /2 lead calls in one chat/);
+assert.match(leadTwice.audit.flow_checks.reasons.join(' '), /"Your request is already with our Sales team" in the turn the lead was made, after "yearly offer plan"/);
+assert.equal(leadTwice.audit.flow_checks.alert, 'Second lead call');
+const leadRight = makeChat({
+  parts: ['User: yearly offer plan', queryBlock('CREATE_LEAD', 'yearly offer plan', leadOutput),
+    'AI agent: Our current offers are shown under View Plans on your dashboard.\n\nWould you like me to connect you with our Sales Team for custom packages or current discounts?'],
+});
+assert.doesNotMatch(leadRight.audit.flow_checks?.reasons.join(' ') || '', /lead calls in one chat|in the turn the lead was made/);
+
+// "ok" and then only "Did this resolve your query?" is the end of a chat, not an early drop
+const doneAfterOk = makeChat({
+  parts: [
+    'User: hi', 'AI agent: Hello! I am Apna Expert. How can I help you today?',
+    'User: why is my secretary job under review', 'AI agent: Your job has been successfully posted, but our team is currently reviewing your documents before it goes active.\n\nThis process typically takes around 30 minutes.',
+    'User: ok', 'AI agent: Did this resolve your query?',
+  ],
+});
+assert.equal(doneAfterOk.audit.early_drop, undefined);
+const droppedAfterQuestion = makeChat({
+  parts: [
+    'User: hi', 'AI agent: Hello! I am Apna Expert. How can I help you today?',
+    'User: why is my secretary job under review', 'AI agent: Your job has been successfully posted, but our team is currently reviewing your documents before it goes active.\n\nThis process typically takes around 30 minutes.',
+    'User: how do I repost it', 'AI agent: To renew an expired job: open Expired Jobs, click Repost Now, choose a plan and publish.\n\nDid this resolve your query?',
+  ],
+});
+assert.ok(droppedAfterQuestion.audit.early_drop);
+
 console.log('All synthetic handoff and flow-rule tests passed.');

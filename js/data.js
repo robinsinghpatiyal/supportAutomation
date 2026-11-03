@@ -222,11 +222,26 @@ function blueMachinesHumanTranscript(raw) {
 
 function blueMachinesHandoffEvents(raw) {
   const events = [];
-  for (const match of String(raw || '').matchAll(/agent_handoff\.([a-z_]+)/gi)) {
-    const event = match[1].toLowerCase();
+  for (const event of blueMachinesHandoffLog(raw)) {
     if (!events.includes(event)) events.push(event);
   }
   return events;
+}
+
+// Every handoff event in order, repeats included ("requested", "failed", "ai_resumed", "requested", ...)
+function blueMachinesHandoffLog(raw) {
+  return [...String(raw || '').matchAll(/agent_handoff\.([a-z_]+)/gi)].map((match) => match[1].toLowerCase());
+}
+
+// The jobs BlueMachines preloaded for the chat (the bot's [[preload_jobs]]): id, title and status
+function preloadedJobs(value) {
+  let list = value;
+  if (typeof value === 'string') {
+    try { list = JSON.parse(value); } catch { return []; }
+  }
+  if (!Array.isArray(list)) return [];
+  return list.filter((job) => job && typeof job === 'object')
+    .map((job) => ({ id: job.id ?? null, title: job.title ?? null, status: job.status ?? null }));
 }
 
 // Human handoff feedback is recorded after a feedback_prompt event, but older
@@ -297,6 +312,7 @@ export function parseBlueMachinesExport(text) {
       transcript: blueMachinesTranscript(rawTranscript),
       humanTranscript: blueMachinesHumanTranscript(humanTranscript),
       handoffEvents: blueMachinesHandoffEvents(humanTranscript),
+      handoffLog: blueMachinesHandoffLog(humanTranscript),
       toolCalls: blueMachinesToolCalls(rawTranscript),
       variables,
       userId: identity.apna_employer_id || variableEmployerId,
@@ -461,6 +477,8 @@ function fromRaw(rec) {
     humanMessages: Array.isArray(rec.humanTranscript) ? rec.humanTranscript : [],
     toolCalls: Array.isArray(rec.toolCalls) ? rec.toolCalls : [],
     handoffEvents: Array.isArray(rec.handoffEvents) ? rec.handoffEvents : [],
+    handoffLog: Array.isArray(rec.handoffLog) ? rec.handoffLog : [],
+    preloadJobs: preloadedJobs(variables.jobs),
     humanHandoff: bm.hasHumanHandoff === true,
     handoffAgentName: str(bm.handoffAgentName),
     handoffPhase: str(bm.handoffPhase),
@@ -583,6 +601,8 @@ function enrich(c) {
   const humanMsgs = Array.isArray(c.humanMessages) ? c.humanMessages : [];
   c.toolCalls = Array.isArray(c.toolCalls) ? c.toolCalls : [];
   c.handoffEvents = Array.isArray(c.handoffEvents) ? c.handoffEvents : [];
+  c.handoffLog = Array.isArray(c.handoffLog) ? c.handoffLog : [];
+  c.preloadJobs = Array.isArray(c.preloadJobs) ? c.preloadJobs : [];
   const { date, time } = toIST(c.createdAt);
   c.dateIST = date;
   c.timeIST = time;
@@ -652,6 +672,8 @@ function enrich(c) {
     } else if (lastRawHandoff && !lastOutput.trim() && !event('requested')) {
       const waited = c.handoffWaitSeconds === null ? '' : ` after ${c.handoffWaitSeconds} s`;
       c.handoffDetail = `No result${waited}, no Freshchat request (usually the employer did not accept the handoff prompt)`;
+    } else if (event('failed')) {
+      c.handoffDetail = 'Freshchat failed the request and the bot resumed, with no result sent to the bot';
     } else if (event('requested') && !event('assigned') && !event('human_active')) {
       c.handoffDetail = 'Sent to Freshchat, no agent assigned';
     }

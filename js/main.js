@@ -377,7 +377,7 @@ function renderList(params) {
         <select id="f-cat">
           <option value="">All chats</option>
           <option value="any" ${f.cat === 'any' ? 'selected' : ''}>In any audit queue</option>
-          <option value="alerts" ${f.cat === 'alerts' ? 'selected' : ''}>⚠ Needs a check (handoff missing)</option>
+          <option value="alerts" ${f.cat === 'alerts' ? 'selected' : ''}>⚠ Needs a check (handoff, review, Sales lead or file)</option>
           ${CATEGORIES.map((c) => `<option value="${c.key}" ${f.cat === c.key ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
         </select></div>
       <div class="field"><label for="f-handoff">Handoff</label>

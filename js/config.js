@@ -91,6 +91,14 @@ export const BOT_LINES = {
   whichPlan: /the right plan depends on your hiring needs/i,
   // An offer to connect to support (not to Sales). Outside support hours the bot asks "Did this resolve your query?" instead.
   supportOffer: /would you like (me )?to connect (you )?with (them|our support team)|i can connect you with our support team|support team se [^.?\n]*(connect|baat)[^.?\n]*\?/i,
+  // The file line (L-FILE) and S32: wrong when a job is under review, which goes to a human instead
+  fileLine: /unable to read files shared in this chat|can't open or read files shared in this chat/i,
+  // The support-hours message (L-GATE and its Hinglish version): once a chat, later closed results get the offline message
+  supportHours: /chat support team is available from|hamari chat support team subah/i,
+  // S82 and S4: steps to upload documents, wrong for an account whose documents are submitted
+  uploadSteps: /verification is not complete yet|go to the job verification page on your dashboard and upload/i,
+  // L-LEAD-DONE: only after the lead turn, never in it
+  leadDone: /your request is already with our sales team/i,
   // The 30-minute review answer (S2, S84 and their Hinglish versions); wrong once a review is over 30 minutes old
   review30: /takes around 30 minutes|lagbhag 30 minute/i,
 };
@@ -186,7 +194,7 @@ export const CATEGORIES = [
   {
     key: 'flow_checks',
     name: 'Chat Flow & Handoff Checks',
-    rule: 'Checks missing replies, incomplete or fake handoffs, premature closing, English/Hinglish reply mismatches, short replies ("ok", "ye", "?", an attachment) that switched the chat\'s language, support offers outside 9 AM to 7 PM IST (the bot should ask "Did this resolve your query?" instead), 30-minute answers for delayed reviews, and Sales leads missing after "which plan should I take" or a yes to the Sales Team question.',
+    rule: 'Checks missing replies, incomplete or fake handoffs, premature closing, English/Hinglish reply mismatches, short replies ("ok", "ye", "?", an attachment) that switched the chat\'s language, support offers outside 9 AM to 7 PM IST (the bot should ask "Did this resolve your query?" instead), 30-minute answers for delayed reviews and handoffs for fresh ones, upload steps for documents already submitted, files shared while a job is under review that were not handed off, no reply after a failed handoff, the support-hours message sent twice, and Sales lead mistakes (missing after "which plan should I take" or a yes to the Sales Team question, a second lead call, or "already with our Sales team" in the lead turn).',
     objective: 'Catch broken conversation flow and handoff behaviour that other outcome-based queues miss.',
   },
 ];
