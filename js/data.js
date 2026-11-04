@@ -245,6 +245,11 @@ function blueMachinesHandoffLog(raw) {
   return [...String(raw || '').matchAll(/agent_handoff\.([a-z_]+)/gi)].map((match) => match[1].toLowerCase());
 }
 
+// apna Unlimited subscriber by the preloaded accounts (the bot's [[preload_accounts]])
+function unlimitedPlan(value) {
+  return /"plan_type"\s*:\s*"apna Unlimited"/i.test(typeof value === 'string' ? value : JSON.stringify(value || ''));
+}
+
 // The jobs BlueMachines preloaded for the chat (the bot's [[preload_jobs]]): id, title and status
 function preloadedJobs(value) {
   let list = value;
@@ -481,6 +486,8 @@ function fromRaw(rec) {
     handoffEvents: Array.isArray(rec.handoffEvents) ? rec.handoffEvents : [],
     handoffLog: Array.isArray(rec.handoffLog) ? rec.handoffLog : [],
     preloadJobs: preloadedJobs(variables.jobs),
+    onUnlimited: unlimitedPlan(variables.accounts),
+    isBanned: booleanCell(variables.isBanned),
     humanHandoff: bm.hasHumanHandoff === true,
     handoffAgentName: str(bm.handoffAgentName),
     handoffPhase: str(bm.handoffPhase),
@@ -561,6 +568,8 @@ function fromFlat(rec) {
     messages,
     humanMessages: [],
     humanTimeline: [],
+    onUnlimited: false,
+    isBanned: null,
     toolCalls: [],
     handoffEvents: [],
     humanHandoff: !!(rec.human_transcript_json && rec.human_transcript_json.length),
@@ -606,6 +615,8 @@ function enrich(c) {
   c.handoffEvents = Array.isArray(c.handoffEvents) ? c.handoffEvents : [];
   c.handoffLog = Array.isArray(c.handoffLog) ? c.handoffLog : [];
   c.preloadJobs = Array.isArray(c.preloadJobs) ? c.preloadJobs : [];
+  // A credits result in the chat can show the subscription too
+  c.onUnlimited = !!c.onUnlimited || c.toolCalls.some((call) => /plan_type\\?"\s*:\s*\\?"apna Unlimited/i.test(String(call.output || '')));
   const { date, time } = toIST(c.createdAt);
   c.dateIST = date;
   c.timeIST = time;
@@ -706,8 +717,23 @@ export function normalize(rec) {
   return enrich(isFlat ? fromFlat(rec) : fromRaw(rec));
 }
 
-// Keep one record per conversation: the evaluated one, then the most recent
+// How much of the chat a record holds: a later export of the same chat has more messages, handoff
+// events and tool calls (for example the agent part finished after the earlier export was taken).
+const contentSize = (c) => c.messages.length + (c.humanTimeline || []).length + (c.toolCalls || []).length;
+
+// Keep one record per conversation: the most complete one. When only the shorter copy was evaluated,
+// its evaluation is kept on the complete copy. Equal copies: the evaluated one, then the most recent.
 function better(a, b) {
+  const sa = contentSize(a);
+  const sb = contentSize(b);
+  if (sa !== sb) {
+    const base = sa > sb ? a : b;
+    const other = base === a ? b : a;
+    if (!base.hasEval && other.hasEval && base.raw?._source === 'bluemachines_csv' && other.raw?.eval) {
+      return normalize({ ...base.raw, eval: other.raw.eval });
+    }
+    return base;
+  }
   if (a.hasEval !== b.hasEval) return a.hasEval ? a : b;
   const ta = a.createdAt ? a.createdAt.getTime() : 0;
   const tb = b.createdAt ? b.createdAt.getTime() : 0;
@@ -717,13 +743,22 @@ function better(a, b) {
 export function mergeConversations(existing, records) {
   const byId = new Map(existing.map((c) => [c.id, c]));
   let skipped = 0;
+  let added = 0;
+  let updated = 0;
   for (const rec of records) {
     if (!rec || typeof rec !== 'object') { skipped++; continue; }
     let c;
     try { c = normalize(rec); } catch (e) { skipped++; continue; }
     if (!c.id) { skipped++; continue; }
     const prev = byId.get(c.id);
-    byId.set(c.id, prev ? better(prev, c) : c);
+    if (!prev) {
+      added++;
+      byId.set(c.id, c);
+      continue;
+    }
+    const kept = better(prev, c);
+    if (kept !== prev) updated++;
+    byId.set(c.id, kept);
   }
   const all = [...byId.values()].sort((a, b) => (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0));
   const testPhoneNumbers = new Set(all
@@ -732,5 +767,5 @@ export function mergeConversations(existing, records) {
   all.forEach((c) => {
     if (c.phoneNumber && testPhoneNumbers.has(c.phoneNumber)) c.isTest = true;
   });
-  return { conversations: all, skipped };
+  return { conversations: all, skipped, added, updated };
 }

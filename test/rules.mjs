@@ -28,10 +28,10 @@ function transcript(parts, variables = {}) {
   ].join('\n');
 }
 
-function makeChat({
+function exportRecords({
   parts, humanTranscript = '', variables = {}, externalUserId = '9000000000',
   agentName = 'Apna Expert', interactionEnvironment = 'LIVE', evaluationTurns = null,
-  interactionDate = '2026-10-15T06:00:00.000Z', handoffAgentName = '',
+  interactionDate = '2026-10-15T06:00:00.000Z', handoffAgentName = '', id = null,
 }) {
   sequence++;
   const headers = [
@@ -40,13 +40,16 @@ function makeChat({
     'evaluation.eval_version', 'evaluation.turn_by_turn', 'handoffAgentName',
   ];
   const row = [
-    `synthetic-${sequence}`, interactionDate, 'Synthetic employer', externalUserId,
+    id || `synthetic-${sequence}`, interactionDate, 'Synthetic employer', externalUserId,
     agentName, interactionEnvironment, evaluationTurns ? 'OK' : 'PENDING', humanTranscript, transcript(parts, variables),
     evaluationTurns ? 'synthetic-v1' : '', evaluationTurns ? JSON.stringify(evaluationTurns) : '', handoffAgentName,
   ];
   const csv = `${headers.map(csvCell).join(',')}\n${row.map(csvCell).join(',')}\n`;
-  const records = parseBlueMachinesExport(csv);
-  const { conversations } = mergeConversations([], records);
+  return parseBlueMachinesExport(csv);
+}
+
+function makeChat(options) {
+  const { conversations } = mergeConversations([], exportRecords(options));
   runAudit(conversations);
   return conversations[0];
 }
@@ -628,5 +631,70 @@ assert.equal(byAgent['Rahul Kumar Sinha'].passedOn, 1);
 assert.equal(byAgent['Asif Laskar'].noAnswer, 1);
 assert.equal(byAgent['Asif Laskar'].cameBack, 1);
 assert.deepEqual(csatDaily(all).map((d) => [d.date, d.sessions, d.csatAskedSessions]), [['2026-10-15', 3, 2]]);
+
+// ---------- Several exports and the newer checks ----------
+// The same chat in two exports: the more complete copy wins, whichever file comes first, and keeps the evaluation
+const early = exportRecords({
+  id: 'same-chat', parts: ['User: connect me to support', toolBlock('Request sent')],
+  evaluationTurns: [{ turn: 1, user_input: 'connect me to support', bot_output: null, turn_score: 4 }],
+  humanTranscript: human([['06:00:00', 'agent_handoff.requested'], ['06:00:20', 'Gul Khan EXT (Agent): Hello']]),
+});
+const later = exportRecords({
+  id: 'same-chat', parts: ['User: connect me to support', toolBlock('Request sent'), HANDBACK],
+  humanTranscript: human([
+    ['06:00:00', 'agent_handoff.requested'], ['06:00:20', 'Gul Khan EXT (Agent): Hello'],
+    ['06:05:00', 'agent_handoff.resolved'], ['06:05:00', 'agent_handoff.feedback_prompt'], ['06:05:00', 'agent_handoff.ai_resumed'],
+  ]),
+});
+const firstLoad = mergeConversations([], early);
+const merged = mergeConversations(firstLoad.conversations, later);
+assert.equal(firstLoad.added, 1);
+assert.equal(merged.added, 0);
+assert.equal(merged.updated, 1);
+assert.equal(merged.conversations.length, 1);
+assert.equal(merged.conversations[0].agentSessions[0].outcome, 'resolved');
+assert.equal(merged.conversations[0].hasEval, true);
+const reversed = mergeConversations(mergeConversations([], later).conversations, early);
+assert.equal(reversed.updated, 1); // the complete copy stays and takes the evaluation from the shorter one
+assert.equal(reversed.conversations[0].hasEval, true);
+assert.equal(reversed.conversations[0].agentSessions[0].outcome, 'resolved');
+
+const flowReasons = (c) => (c.audit.flow_checks?.reasons || []).join(' | ');
+// "Credits & Usage" to an apna Unlimited subscriber
+const subscriber = makeChat({
+  parts: ['User: cancel my plan', 'AI agent: To turn off auto-renewal:\n- Go to Credits & Usage on your dashboard.\n- Click the 3-dots menu next to your plan.'],
+  variables: { accounts: JSON.stringify([{ plans: [{ plan_type: 'apna Unlimited' }] }]) },
+});
+assert.match(flowReasons(subscriber), /"Credits & Usage" sent to an apna Unlimited subscriber/);
+const notSubscriber = makeChat({ parts: ['User: cancel my plan', 'AI agent: To turn off auto-renewal:\n- Go to Credits & Usage on your dashboard.'] });
+assert.doesNotMatch(flowReasons(notSubscriber), /Plans & Usage/);
+
+// A suspended account told it is not blocked
+const suspended = makeChat({ parts: ['User: Account block', 'AI agent: Your account is not blocked. Your verification is complete.'], variables: { isBanned: true } });
+assert.equal(suspended.audit.flow_checks.alert, 'Suspended account told it is not blocked');
+const suspendedOk = makeChat({ parts: ['User: Account block', 'AI agent: Your account has been temporarily suspended due to a policy flag.\n\nOur Trust and Safety team will review your profile and get back to you within 24 hours.'], variables: { isBanned: true } });
+assert.doesNotMatch(flowReasons(suspendedOk), /Suspended account/);
+
+// "no" to the closing line is not a handoff
+const afterClosing = makeChat({
+  parts: ['User: thanks', 'AI agent: Thank you for choosing Apna! Have a great day. Let me know if you need anything else.', 'User: no', toolBlock('Request sent', 2000)],
+});
+assert.match(flowReasons(afterClosing), /Handoff after the closing line for "no"/);
+
+// The hand-back line after a handoff that timed out with no agent (roadmap #43)
+const timedOut = makeChat({
+  parts: ['User: i am unable to use database', toolBlock(undefined, 478000), HANDBACK],
+  humanTranscript: human([['06:00:00', 'agent_handoff.requested'], ['06:00:05', 'agent_handoff.waiting'], ['06:08:00', 'agent_handoff.timed_out'], ['06:08:00', 'agent_handoff.ai_resumed']]),
+});
+assert.match(flowReasons(timedOut), /hand-back|though no agent joined/);
+
+// Job tips in support hours are followed by a handoff (from 4 Nov 2026)
+const tipsPart = 'AI agent: Your Welder job is on the Classic plan and has received 4 leads so far.\n\n- Add perks\n\nYou can make these changes from Edit Job on your dashboard. Editing an active job may send it for a quick review.';
+const tipsOnly = makeChat({ parts: ['User: not getting applications', tipsPart], interactionDate: '2026-11-04T06:00:00.000Z' });
+assert.match(flowReasons(tipsOnly), /Job tips in support hours with no handoff/);
+const tipsThenHandoff = makeChat({ parts: ['User: not getting applications', tipsPart, toolBlock('Request sent', 2000)], interactionDate: '2026-11-04T06:00:00.000Z' });
+assert.doesNotMatch(flowReasons(tipsThenHandoff), /Job tips in support hours/);
+const tipsBeforeRule = makeChat({ parts: ['User: not getting applications', tipsPart], interactionDate: '2026-11-02T06:00:00.000Z' });
+assert.doesNotMatch(flowReasons(tipsBeforeRule), /Job tips in support hours/);
 
 console.log('All synthetic handoff, flow-rule and agent CSAT tests passed.');

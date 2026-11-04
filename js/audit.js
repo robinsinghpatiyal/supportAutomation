@@ -4,7 +4,7 @@
 import {
   THRESHOLDS, FRUSTRATION_TERMS, AGENT_REQUEST_TERMS, BOT_LINES, LOOP_TAGS, CATEGORIES,
   ACKNOWLEDGEMENT, NO_REPLY_AFTER_CLOSING, EMOJI_ONLY, GREETING_ONLY, EMPLOYER_HINDI_WORDS, BOT_HINDI_WORDS,
-  ATTACHMENT_ONLY, SALES_YES, TEAM_SALUTATION,
+  ATTACHMENT_ONLY, SALES_YES, TEAM_SALUTATION, RULES_LIVE_FROM,
 } from './config.js';
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -548,6 +548,58 @@ const RULES = {
         reasons.push(`"Your request is already with our Sales team" in the turn the lead was made, after "${snip(c.messages[leadCalls[0].messageIndex]?.text)}": the answer with its Sales question, or the Sales confirmation after a yes, was due.`);
         alert ||= 'Wrong Sales line in the lead turn';
       }
+    }
+
+    // "Credits & Usage" is called "Plans & Usage" on an apna Unlimited subscription
+    if (c.onUnlimited) {
+      const wrongName = c.messages.find((m) => m.speaker === 'Bot' && BOT_LINES.creditsUsage.test(m.text));
+      if (wrongName) reasons.push(`"Credits & Usage" sent to an apna Unlimited subscriber (it is "Plans & Usage" for them): "${snip(wrongName.text)}"`);
+    }
+
+    // A suspended account (isBanned) gets the suspension message, never "your account is not blocked"
+    if (c.isBanned === true) {
+      const fine = c.messages.find((m) => m.speaker === 'Bot' && BOT_LINES.notBlocked.test(m.text));
+      if (fine) {
+        reasons.push(`Suspended account (isBanned true) told it is not blocked: "${snip(fine.text)}"`);
+        alert ||= 'Suspended account told it is not blocked';
+      }
+      const asked = c.messages.find((m) => m.speaker === 'User' && /\bblock|suspend/i.test(m.text));
+      if (asked && !fine && !c.messages.some((m) => m.speaker === 'Bot' && BOT_LINES.suspended.test(m.text))) {
+        reasons.push(`Suspended account (isBanned true) asked about the block and did not get the suspension message: "${snip(asked.text)}"`);
+      }
+    }
+
+    // "no", "ok" or "thanks" after the closing line ends the chat: it is never a handoff
+    handoffCalls.forEach((call) => {
+      if (call.messageIndex < 0) return;
+      const m = c.messages[call.messageIndex];
+      const priorBot = lastBotBefore(c.messages, call.messageIndex);
+      if (m && priorBot && BOT_LINES.closing.test(priorBot.text) && (NO_REPLY_AFTER_CLOSING.test(m.text) || EMOJI_ONLY.test(m.text))) {
+        reasons.push(`Handoff after the closing line for "${snip(m.text)}": after the closing line it means they need nothing more.`);
+        alert ||= 'Handoff after the closing line';
+      }
+    });
+
+    // BlueMachines posts its hand-back line ("Hope the support team has resolved your queries") even
+    // when the handoff timed out or failed before any agent joined (roadmap #43)
+    // (an agent who writes only after the time-out does not count: the hand-back line already went out)
+    const sessions = c.agentSessions || [];
+    const agentBeforeEnd = (s) => [s.humanActiveAt, s.firstAgentReplyAt].some((t) => t && (!s.endAt || t <= s.endAt));
+    const handbackLines = c.messages.filter((m) => m.speaker === 'Bot' && BOT_LINES.handback.test(m.text)).length;
+    const resumedWithAgent = sessions.filter((s) => s.resumedAt && agentBeforeEnd(s)).length;
+    if (handbackLines > resumedWithAgent && sessions.some((s) => s.resumedAt && !agentBeforeEnd(s) && ['timed_out', 'failed'].includes(s.outcome))) {
+      reasons.push('BlueMachines sent "Hope the support team has resolved your queries" though no agent joined (the handoff timed out or failed).');
+    }
+
+    // In support hours the job tips (or S160, S75) go out and the same turn hands off, so the team follows up
+    if (c.inSupportHours && c.dateIST >= RULES_LIVE_FROM.tipsThenHandoff) {
+      c.messages.forEach((m, i) => {
+        if (m.speaker !== 'Bot' || !BOT_LINES.jobTips.test(m.text)) return;
+        let u = i - 1;
+        while (u >= 0 && c.messages[u].speaker !== 'User') u--;
+        if (u < 0 || handoffIn(c, u, true).tool) return;
+        reasons.push(`Job tips in support hours with no handoff after them (the team follows up after the tips): "${snip(m.text)}"`);
+      });
     }
 
     // Language, read the way the bot prompt reads it:

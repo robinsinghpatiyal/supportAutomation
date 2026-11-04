@@ -50,7 +50,7 @@ node test/check.mjs path/to/supportPostChat.json
   mongoexport --uri "<connection string>" --collection supportPostChat --jsonArray --out chats.json
   ```
 
-The app reads a JSON array, one document per line, or a single document, with Mongo extended JSON (`$oid`, `$date`). It also reads the transcripts CSV downloaded directly from BlueMachines, including its embedded evaluation JSON, bot transcript, human-support transcript and handoff status. Several files can be added; chats are merged by conversation id (the evaluated record wins, then the newest). Other CSV files are treated as support-escalation lists.
+The app reads a JSON array, one document per line, or a single document, with Mongo extended JSON (`$oid`, `$date`). It also reads the transcripts CSV downloaded directly from BlueMachines, including its embedded evaluation JSON, bot transcript, human-support transcript and handoff status. Several files can be added at once (select or drop them together) or one after another; chats are merged by conversation id, keeping the most complete copy of each chat (a later export where the agent chat had finished wins over an earlier one), with the evaluation carried over when only the shorter copy had one. The Overview lists every loaded file with its records, new chats, updated chats and dates. Other CSV files are treated as support-escalation lists.
 
 It understands both record shapes in the collection:
 1. **Raw post-chat records** (`payload.agentInteractionData.transcript`, `eval` / `payload.eval` with `turn_by_turn`), including older ones with no evaluation.

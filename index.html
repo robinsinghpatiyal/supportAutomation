@@ -20,11 +20,11 @@
     </nav>
     <div class="spacer"></div>
     <span class="data-status" id="data-status">No data loaded</span>
-    <button class="btn" id="btn-upload">Add export file</button>
+    <button class="btn" id="btn-upload">Add export files</button>
     <button class="btn danger" id="btn-clear" data-needs-data disabled>Clear</button>
   </header>
   <main id="app"></main>
-  <div class="drop-overlay">Drop a conversation export (.json/.csv) or escalations CSV</div>
+  <div class="drop-overlay">Drop one or more conversation exports (.json/.csv) or an escalations CSV</div>
   <input type="file" id="file-input" accept=".json,.ndjson,.txt,.csv,application/json" multiple hidden>
   <input type="file" id="esc-input" accept=".csv,text/csv" hidden>
   <script type="module" src="js/main.js"></script>

@@ -101,6 +101,18 @@ export const BOT_LINES = {
   leadDone: /your request is already with our sales team/i,
   // The 30-minute review answer (S2, S84 and their Hinglish versions); wrong once a review is over 30 minutes old
   review30: /takes around 30 minutes|lagbhag 30 minute/i,
+  // S5, the suspension message; and a reply telling a suspended employer the account is fine
+  suspended: /temporarily suspended due to a policy flag|temporarily suspend kar diya gaya/i,
+  notBlocked: /account is not (?:blocked|suspended)|not been (?:blocked|suspended)|account block nahi/i,
+  // Job tips (the JOB PERFORMANCE template's Edit Job line), S160 and S75: in support hours a handoff follows them
+  jobTips: /you can make these changes from edit job on your dashboard|you can filter the candidates who applied by|you can control how far candidates can be from your job location/i,
+  // "Credits & Usage" is "Plans & Usage" for an apna Unlimited subscriber
+  creditsUsage: /credits & usage/i,
+};
+
+// Rules that started on a given day: chats before it are not checked against them
+export const RULES_LIVE_FROM = {
+  tipsThenHandoff: '2026-11-04', // bot v141 and later: job tips in support hours are followed by a handoff
 };
 
 // An employer's agreement to the Sales Team question
@@ -201,7 +213,7 @@ export const CATEGORIES = [
   {
     key: 'flow_checks',
     name: 'Chat Flow & Handoff Checks',
-    rule: 'Checks missing replies, incomplete or fake handoffs, premature closing, English/Hinglish reply mismatches, short replies ("ok", "ye", "?", an attachment) that switched the chat\'s language, support offers outside 9 AM to 7 PM IST (the bot should ask "Did this resolve your query?" instead), 30-minute answers for delayed reviews and handoffs for fresh ones, upload steps for documents already submitted, files shared while a job is under review that were not handed off, no reply after a failed handoff, the support-hours message sent twice, and Sales lead mistakes (missing after "which plan should I take" or a yes to the Sales Team question, a second lead call, or "already with our Sales team" in the lead turn).',
+    rule: 'Checks missing replies, incomplete or fake handoffs, premature closing, English/Hinglish reply mismatches, short replies ("ok", "ye", "?", an attachment) that switched the chat\'s language, support offers outside 9 AM to 7 PM IST (the bot should ask "Did this resolve your query?" instead), 30-minute answers for delayed reviews and handoffs for fresh ones, upload steps for documents already submitted, files shared while a job is under review that were not handed off, no reply after a failed handoff, the support-hours message sent twice, and Sales lead mistakes (missing after "which plan should I take" or a yes to the Sales Team question, a second lead call, or "already with our Sales team" in the lead turn). Also: "Credits & Usage" sent to an apna Unlimited subscriber (it is "Plans & Usage" for them), a suspended account told it is not blocked or not given the suspension message, a handoff after "no" or "ok" to the closing line, the BlueMachines hand-back line after a handoff that timed out or failed with no agent, and job tips in support hours with no handoff after them.',
     objective: 'Catch broken conversation flow and handoff behaviour that other outcome-based queues miss.',
   },
 ];

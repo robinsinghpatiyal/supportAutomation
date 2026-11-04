@@ -102,12 +102,21 @@ function importEscalations(text, name) {
 
 // ---------- loading files ----------
 
+// Remembers a loaded export: its records, the chats it added or completed, and its IST date range
+function noteFile(name, kind, docs, res) {
+  const ids = new Set(docs.map((d) => String(d.conversationId || d.conversation_id || d._id || '')));
+  const dates = state.convs.filter((c) => ids.has(c.id)).map((c) => c.dateIST).filter(Boolean).sort();
+  state.files.push({ name, kind, records: docs.length, added: res.added || 0, updated: res.updated || 0, from: dates[0] || '', to: dates[dates.length - 1] || '' });
+}
+
 async function loadFiles(fileList) {
   const files = [...fileList];
   if (!files.length) return;
-  const before = state.convs.length;
   const messages = [];
   let skipped = 0;
+  let added = 0;
+  let updated = 0;
+  let loaded = 0;
   for (const f of files) {
     const text = await f.text();
     if (/\.csv$/i.test(f.name)) {
@@ -116,8 +125,10 @@ async function loadFiles(fileList) {
         const res = mergeConversations(state.convs, docs);
         state.convs = res.conversations;
         skipped += res.skipped;
-        state.files.push(f.name);
-        messages.push(`${docs.length} BlueMachines records from ${f.name}`);
+        added += res.added;
+        updated += res.updated;
+        loaded++;
+        noteFile(f.name, 'BlueMachines CSV', docs, res);
       } catch (e) {
         if (e.message !== 'Not a BlueMachines conversation export') {
           messages.push(`Could not read ${f.name}: ${e.message}`);
@@ -137,14 +148,20 @@ async function loadFiles(fileList) {
       const res = mergeConversations(state.convs, docs);
       state.convs = res.conversations;
       skipped += res.skipped;
-      state.files.push(f.name);
+      added += res.added;
+      updated += res.updated;
+      loaded++;
+      noteFile(f.name, 'MongoDB export', docs, res);
     } catch (e) {
       messages.push(`Could not read ${f.name}: ${e.message}`);
     }
   }
   runAudit(state.convs, state.escalations);
-  const added = state.convs.length - before;
-  if (added) messages.unshift(`${added} chats loaded`);
+  if (loaded) {
+    const parts = [`${added} new chats`];
+    if (updated) parts.push(`${updated} updated with a more complete copy`);
+    messages.unshift(`${loaded} file${loaded > 1 ? 's' : ''} read: ${parts.join(', ')}`);
+  }
   if (skipped) messages.push(`${skipped} records skipped`);
   toast(messages.join(' · ') || 'Nothing new in that file');
   updateStatus();
@@ -152,10 +169,11 @@ async function loadFiles(fileList) {
 }
 
 function loadText(text, name) {
-  const docs = /\.csv$/i.test(name) ? parseBlueMachinesExport(text) : parseExport(text);
+  const csv = /\.csv$/i.test(name);
+  const docs = csv ? parseBlueMachinesExport(text) : parseExport(text);
   const res = mergeConversations(state.convs, docs);
   state.convs = res.conversations;
-  state.files.push(name);
+  noteFile(name, csv ? 'BlueMachines CSV' : 'MongoDB export', docs, res);
   runAudit(state.convs, state.escalations);
   updateStatus();
   route();
@@ -167,7 +185,8 @@ function updateStatus() {
   document.querySelectorAll('[data-needs-data]').forEach((b) => { b.disabled = !has; });
   if (!has) { el.textContent = 'No data loaded'; return; }
   const dates = state.convs.map((c) => c.dateIST).filter(Boolean).sort();
-  el.textContent = `${state.convs.length} chats · ${fmtDate(dates[0])} to ${fmtDate(dates[dates.length - 1])}`;
+  const files = state.files.length;
+  el.textContent = `${state.convs.length} chats${files ? ` from ${files} file${files > 1 ? 's' : ''}` : ''} · ${fmtDate(dates[0])} to ${fmtDate(dates[dates.length - 1])}`;
 }
 
 // ---------- filtering ----------
@@ -290,9 +309,9 @@ function renderUpload() {
   app.innerHTML = `
     <div class="dropzone" id="dropzone">
       <h1>Audit Apna Expert chats</h1>
-      <p>Drop a MongoDB <b>supportPostChat</b> export or a BlueMachines transcripts CSV here.</p>
-      <p class="muted small">JSON, NDJSON or BlueMachines CSV. You can add more files later; chats are merged by conversation id.</p>
-      <button class="btn primary" id="pick">Choose export file</button>
+      <p>Drop one or more MongoDB <b>supportPostChat</b> exports or BlueMachines transcripts CSVs here.</p>
+      <p class="muted small">JSON, NDJSON or BlueMachines CSV. Select several files at once (Ctrl or Cmd click), drop them together, or add more later. A chat that is in more than one file is kept once, in its most complete copy.</p>
+      <button class="btn primary" id="pick">Choose export files</button>
       <div class="howto">
         <b>How to export from MongoDB</b>
         <ol>
@@ -359,8 +378,20 @@ function renderOverviewBody() {
     <div class="section two-col">
       <div class="card pad"><h2>Top intents</h2><p class="muted small">Engaged chats by the evaluator's main intent, with average bot score and handoff share</p>${rankTable(topIntents(convs), (r) => `${r.count} · ${r.avgScore === null ? '–' : Math.round(r.avgScore) + '%'} · ${fmtPct(r.handoffPct)} handoff`)}</div>
       <div class="card pad"><h2>Top failure tags</h2><p class="muted small">Chats carrying each evaluator tag</p>${rankTable(topTags(convs), (r) => `${r.count}`)}</div>
-    </div>`;
+    </div>
+    ${loadedFilesHTML()}`;
   dailyChart(body.querySelector('#daily'), daily(convs));
+}
+
+function loadedFilesHTML() {
+  if (!state.files.length) return '';
+  return `<div class="section card">
+      <div class="pager" style="justify-content:space-between"><b>Loaded files</b><span class="muted small">A chat in more than one file is kept once, in its most complete copy (an agent chat finished after an earlier export, for example).</span></div>
+      <div class="table-wrap"><table class="list">
+        <thead><tr><th>File</th><th>Type</th><th class="num">Records</th><th class="num">New chats</th><th class="num">Updated chats</th><th>Dates (IST)</th></tr></thead>
+        <tbody>${state.files.map((f) => `<tr><td>${esc(f.name)}</td><td>${esc(f.kind)}</td><td class="num">${f.records}</td><td class="num">${f.added}</td><td class="num">${f.updated}</td><td class="when">${esc(f.from ? `${fmtDate(f.from)}${f.to !== f.from ? ` to ${fmtDate(f.to)}` : ''}` : '–')}</td></tr>`).join('')}</tbody>
+      </table></div>
+    </div>`;
 }
 
 function rankTable(rows, valueText) {
